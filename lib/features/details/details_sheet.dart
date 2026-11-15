@@ -133,10 +133,12 @@ class _MediaDetailsSheetState extends ConsumerState<MediaDetailsSheet> {
     final genreIds =
         _details?.genreIds.isNotEmpty == true ? _details!.genreIds : widget.initialGenreIds;
 
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
-      child: ListView(
-        children: [
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+        child: ListView(
+          children: [
           Center(
             child: Container(
               width: 40,
@@ -529,6 +531,7 @@ class _MediaDetailsSheetState extends ConsumerState<MediaDetailsSheet> {
           ],
         ],
       ),
+    ),
     );
   }
 

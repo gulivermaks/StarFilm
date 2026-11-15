@@ -160,11 +160,17 @@
     - `tools/build_apk.ps1` — собран подписанный `StarFilm.apk` `v0.06` (`versionCode=6`, `60.56 MB`);
     - Живая проверка на физическом **Pixel XL (`HT6AD0200687`)**: `adb install -r StarFilm.apk` (`Success`), подтверждены локализованный диалог «Подключить StarTV», строка статуса в «Диагностика» (`TMDB: OK • Gemini: OK • Облако: OK • Профилей: 2 • Записей: 5 • StarTV: нет` + `Журнал пуст`), `Проверить обновления v0.06 (6)` и ответ `У вас актуальная версия (0.06)`.
 
+- **Исправления под Android 15/16 / Samsung S26 Ultra и OTA (`v0.07`, `versionCode=7`)**:
+  - Устранено перекрытие нижней кнопки «Проверить обновления» (и нижней части карточки фильма) 3-кнопочной системной панелью навигации Android: добавлен `SafeArea(top: false)` в `lib/features/settings/settings_screen.dart` и `lib/features/details/details_sheet.dart`, настроен `SystemUiMode.edgeToEdge` + прозрачные/светлые иконки системных баров (`lib/main.dart`, `lib/app/theme.dart`).
+  - Настроена тёмная плавающая тема `SnackBarThemeData` в `lib/app/theme.dart` (без белой полосы на тёмном фоне).
+  - В `android/app/src/main/kotlin/app/starfilm/android/MainActivity.kt` добавлена проверка `canRequestPackageInstalls()`: при отсутствии разрешения открываются настройки Android «Установка неизвестных приложений» для StarFilm, возвращается `permission_required`, а скачанный и проверенный APK сохраняется для повторного нажатия (`update_install_permission` в `lib/app/l10n.dart`, `lib/features/settings/settings_screen.dart`).
+  - Проверки `v0.07`: `flutter analyze` — `No issues found!`, `flutter test` — `32/32`, собран `StarFilm.apk v0.07 (7)` (`60.56 MB`), установлено и проверено на Pixel XL (`HT6AD0200687`).
+
 ## 5. На каком этапе остановились и что дальше
 
-- **Текущий этап**: Релиз **`v0.05` (`versionCode=5`)** опубликован на GitHub; итерация **`v0.06` (`versionCode=6`)** закрыла все оставшиеся задачи `StarFilm v1.0` на стороне телефона (`StarFilm_SPECIFICATION_v2.1_FREE.md`), собрана, проверена автотестами (`31/31`) и установлена/проверена на физическом Pixel XL.
+- **Текущий этап**: Релиз **`v0.05` (`versionCode=5`)** опубликован на GitHub; локальная сборка **`v0.07` (`versionCode=7`)** собрана, проверена автотестами (`32/32`) и на физическом Pixel XL.
 - **Следующий шаг**:
-  1. По явной команде владельца: публикация `v0.06` на GitHub (при необходимости), доработка серверной стороны `StarTV` на приставке, либо переход к бэклогу `v1.1+` (раздел 12 спецификации).
+  1. По явной команде владельца: публикация `v0.07` на GitHub (чтобы S26 Ultra после ручной установки один раз получил полноценный OTA-апдейт на `v0.08+`), доработка серверной стороны `StarTV` на приставке или бэклог `v1.1+`.
 
 ---
 

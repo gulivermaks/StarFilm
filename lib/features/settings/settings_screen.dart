@@ -156,6 +156,14 @@ class SettingsScreen extends ConsumerStatefulWidget {
                 });
                 return;
               }
+              if (result == 'permission_required') {
+                setDialogState(() {
+                  downloading = false;
+                  verifying = false;
+                  errorText = strings.t('update_install_permission');
+                });
+                return;
+              }
               setDialogState(() {
                 downloading = false;
                 verifying = false;
@@ -284,9 +292,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
     return Scaffold(
       appBar: AppBar(title: Text(s.t('settings'))),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
+      body: SafeArea(
+        top: false,
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 28),
+          children: [
           _sectionHeader(s.t('profiles')),
           for (final p in state.profiles)
             ListTile(
@@ -520,6 +530,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             label: Text('${s.t('check_updates')} $_versionLabel'),
           ),
         ],
+      ),
       ),
     );
   }

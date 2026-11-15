@@ -3,7 +3,9 @@ package app.starfilm.android
 import android.content.Intent
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
+import android.provider.Settings
 import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -53,6 +55,21 @@ class MainActivity : FlutterActivity() {
         if (installedCerts.isEmpty() || archiveCerts.isEmpty() || installedCerts.intersect(archiveCerts).isEmpty()) {
             apkFile.delete()
             return "signature_mismatch"
+        }
+
+        if (!packageManager.canRequestPackageInstalls()) {
+            val permissionIntent = Intent(
+                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                Uri.parse("package:$packageName")
+            ).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            return try {
+                startActivity(permissionIntent)
+                "permission_required"
+            } catch (e: Exception) {
+                "error:${e.message ?: "install_permission_denied"}"
+            }
         }
 
         val apkUri = FileProvider.getUriForFile(

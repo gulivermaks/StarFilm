@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 class StarFilmColors {
   const StarFilmColors._();
@@ -48,6 +49,23 @@ ThemeData buildStarFilmTheme() {
       foregroundColor: StarFilmColors.textPrimary,
       elevation: 0,
       centerTitle: false,
+      systemOverlayStyle: SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: Brightness.light,
+        systemNavigationBarColor: Colors.transparent,
+        systemNavigationBarIconBrightness: Brightness.light,
+        systemNavigationBarContrastEnforced: false,
+      ),
+    ),
+    snackBarTheme: SnackBarThemeData(
+      backgroundColor: StarFilmColors.surfaceElevated,
+      contentTextStyle: const TextStyle(color: StarFilmColors.textPrimary),
+      actionTextColor: StarFilmColors.limeFocus,
+      behavior: SnackBarBehavior.floating,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: const BorderSide(color: StarFilmColors.border),
+      ),
     ),
     navigationBarTheme: NavigationBarThemeData(
       backgroundColor: StarFilmColors.surface,

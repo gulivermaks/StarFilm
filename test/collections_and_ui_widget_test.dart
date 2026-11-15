@@ -404,6 +404,53 @@ void main() {
       find.text('APK signing certificate mismatch — installation blocked'),
       findsOneWidget,
     );
+
+    // Verify unknown-sources permission hint is shown cleanly.
+    installResult = 'permission_required';
+    await tester.tap(find.text('Install update'));
+    for (var i = 0; i < 40 &&
+        find.text('Allow installing unknown apps for StarFilm in Android settings, then tap Install update again').evaluate().isEmpty;
+        i++) {
+      await tester.pump();
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
+    }
+    await tester.pumpAndSettle();
+    expect(
+      find.text('Allow installing unknown apps for StarFilm in Android settings, then tap Install update again'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('SettingsScreen wraps scrollable body in bottom SafeArea for 3-button nav bars',
+      (tester) async {
+    SharedPreferences.setMockInitialValues({
+      'starfilm.onboarding_done': true,
+      'starfilm.ui_lang': 'en',
+    });
+    final db = AppDatabase(NativeDatabase.memory());
+    addTearDown(db.close);
+    final services = _makeUiTestServices(
+      db: db,
+      mockHttp: MockClient((_) async => http.Response('{}', 200)),
+    );
+    final container = await _bootTestContainer(tester, services);
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: const MaterialApp(
+          home: MediaQuery(
+            data: MediaQueryData(padding: EdgeInsets.only(bottom: 48)),
+            child: SettingsScreen(),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final listRect = tester.getRect(find.byType(ListView));
+    final screenSize = tester.view.physicalSize / tester.view.devicePixelRatio;
+    expect(listRect.bottom, lessThanOrEqualTo(screenSize.height - 48));
   });
 
   testWidgets('OnboardingScreen and StarTvPairingDialog localize controls in English',
