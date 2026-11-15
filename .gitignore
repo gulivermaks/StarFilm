@@ -9,6 +9,8 @@ android/key.properties
 secrets.json
 *.env
 .env.*
+Key.txt
+ADB Pixel/
 
 # Local Android / Flutter machine paths
 local.properties
@@ -41,3 +43,7 @@ android/local.properties
 .vscode/
 .DS_Store
 Thumbs.db
+node_modules/
+.firebase/
+*-debug.log
+/android/app/google-services.json
