@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/app_state.dart';
+import '../../app/l10n.dart';
 import '../../app/theme.dart';
+import '../../core/models/library_entry.dart';
 import '../../core/models/media_key.dart';
 import '../details/details_sheet.dart';
 import '../search/tmdb_client.dart';
@@ -68,11 +70,23 @@ class _LibraryTabState extends ConsumerState<LibraryTab> {
                     PopupMenuButton<_LibrarySort>(
                       icon: const Icon(Icons.sort),
                       onSelected: (v) => setState(() => _sort = v),
-                      itemBuilder: (_) => const [
-                        PopupMenuItem(value: _LibrarySort.recent, child: Text('За датою')),
-                        PopupMenuItem(value: _LibrarySort.rating, child: Text('За оцінкою')),
-                        PopupMenuItem(value: _LibrarySort.year, child: Text('За роком')),
-                        PopupMenuItem(value: _LibrarySort.title, child: Text('За назвою')),
+                      itemBuilder: (_) => [
+                        PopupMenuItem(
+                          value: _LibrarySort.recent,
+                          child: Text(s.t('sort_recent')),
+                        ),
+                        PopupMenuItem(
+                          value: _LibrarySort.rating,
+                          child: Text(s.t('sort_rating')),
+                        ),
+                        PopupMenuItem(
+                          value: _LibrarySort.year,
+                          child: Text(s.t('sort_year')),
+                        ),
+                        PopupMenuItem(
+                          value: _LibrarySort.title,
+                          child: Text(s.t('sort_title')),
+                        ),
                       ],
                     ),
                     PopupMenuButton<MediaType?>(
@@ -203,11 +217,15 @@ class _LibraryTabState extends ConsumerState<LibraryTab> {
 
   Widget _buildCollectionsView(BuildContext context, AppControllerState state) {
     final s = state.strings;
+    final entriesByKey = <String, LibraryEntry>{
+      for (final e in state.entries) e.keyString: e,
+    };
+
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
         FilledButton.icon(
-          onPressed: () => _promptNewCollection(context, s.t('new_collection')),
+          onPressed: () => _createCollectionDialog(context, s),
           icon: const Icon(Icons.create_new_folder_outlined),
           label: Text(s.t('new_collection')),
         ),
@@ -226,35 +244,163 @@ class _LibraryTabState extends ConsumerState<LibraryTab> {
           for (final UserCollection col in state.collections)
             Card(
               margin: const EdgeInsets.only(bottom: 10),
-              child: ListTile(
+              clipBehavior: Clip.antiAlias,
+              child: ExpansionTile(
                 leading: const Icon(Icons.folder_special_outlined, color: StarFilmColors.lime),
-                title: Text(col.title),
-                subtitle: Text('${col.mediaKeys.length}'),
+                title: Text(col.title, style: const TextStyle(fontWeight: FontWeight.w600)),
+                subtitle: Text(s.t('collection_items_count', {'n': col.mediaKeys.length})),
+                trailing: PopupMenuButton<String>(
+                  onSelected: (action) async {
+                    if (action == 'rename') {
+                      await _renameCollectionDialog(context, s, col);
+                    } else if (action == 'delete') {
+                      await ref.read(appControllerProvider.notifier).deleteCollection(col);
+                    }
+                  },
+                  itemBuilder: (_) => [
+                    PopupMenuItem(value: 'rename', child: Text(s.t('rename'))),
+                    PopupMenuItem(value: 'delete', child: Text(s.t('delete'))),
+                  ],
+                ),
+                children: [
+                  if (col.mediaKeys.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          s.t('collection_empty'),
+                          style: const TextStyle(color: StarFilmColors.textSecondary),
+                        ),
+                      ),
+                    )
+                  else
+                    for (final keyStr in col.mediaKeys)
+                      _buildCollectionMemberTile(context, s, col, keyStr, entriesByKey[keyStr]),
+                ],
               ),
             ),
       ],
     );
   }
 
-  Future<void> _promptNewCollection(BuildContext context, String title) async {
-    final ctrl = TextEditingController();
-    final created = await showDialog<String>(
+  Widget _buildCollectionMemberTile(
+    BuildContext context,
+    AppStrings s,
+    UserCollection col,
+    String keyStr,
+    LibraryEntry? entry,
+  ) {
+    final parsed = MediaKey.tryParse(keyStr);
+    if (entry != null) {
+      return ListTile(
+        leading: ClipRRect(
+          borderRadius: BorderRadius.circular(6),
+          child: entry.posterPath.isNotEmpty
+              ? Image.network(
+                  TmdbClient.posterUrl(entry.posterPath, size: 'w185'),
+                  width: 36,
+                  height: 54,
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, _, _) =>
+                      const SizedBox(width: 36, height: 54, child: Icon(Icons.movie)),
+                )
+              : const SizedBox(width: 36, height: 54, child: Icon(Icons.movie)),
+        ),
+        title: Text(entry.title),
+        subtitle: Text(
+          [
+            if (entry.year != null) '${entry.year}',
+            if (entry.userRating != null) '★ ${entry.userRating}/10',
+            entry.mediaType == MediaType.tv ? s.t('type_tv') : s.t('type_movie'),
+          ].join(' • '),
+        ),
+        trailing: IconButton(
+          tooltip: s.t('remove_from_collection'),
+          icon: const Icon(Icons.close),
+          onPressed: () =>
+              ref.read(appControllerProvider.notifier).toggleItemInCollection(col, entry.mediaKey),
+        ),
+        onTap: () => MediaDetailsSheet.show(
+          context,
+          mediaType: entry.mediaType,
+          tmdbId: entry.tmdbId,
+          title: entry.title,
+          originalTitle: entry.originalTitle,
+          year: entry.year,
+          posterPath: entry.posterPath,
+          genreIds: entry.genreIds,
+          tmdbRating: entry.tmdbRating,
+        ),
+      );
+    }
+
+    return ListTile(
+      leading: const Icon(Icons.movie_outlined, color: StarFilmColors.textSecondary),
+      title: Text(s.t('missing_in_library', {'key': keyStr})),
+      trailing: parsed == null
+          ? null
+          : IconButton(
+              tooltip: s.t('remove_from_collection'),
+              icon: const Icon(Icons.close),
+              onPressed: () =>
+                  ref.read(appControllerProvider.notifier).toggleItemInCollection(col, parsed),
+            ),
+    );
+  }
+
+  Future<String?> _promptCollectionTitle(
+    BuildContext context,
+    AppStrings s, {
+    required String dialogTitle,
+    String initialValue = '',
+  }) {
+    final ctrl = TextEditingController(text: initialValue);
+    return showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: StarFilmColors.surface,
-        title: Text(title),
-        content: TextField(controller: ctrl, autofocus: true),
+        title: Text(dialogTitle),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          decoration: InputDecoration(hintText: s.t('collection_name')),
+        ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Скасувати')),
+          TextButton(onPressed: () => Navigator.pop(ctx), child: Text(s.t('cancel'))),
           FilledButton(
             onPressed: () => Navigator.pop(ctx, ctrl.text),
-            child: const Text('ОК'),
+            child: Text(s.t('ok')),
           ),
         ],
       ),
     );
+  }
+
+  Future<void> _createCollectionDialog(BuildContext context, AppStrings s) async {
+    final created = await _promptCollectionTitle(
+      context,
+      s,
+      dialogTitle: s.t('new_collection'),
+    );
     if (created != null && created.trim().isNotEmpty) {
       await ref.read(appControllerProvider.notifier).createCollection(created);
+    }
+  }
+
+  Future<void> _renameCollectionDialog(
+    BuildContext context,
+    AppStrings s,
+    UserCollection col,
+  ) async {
+    final next = await _promptCollectionTitle(
+      context,
+      s,
+      dialogTitle: s.t('rename'),
+      initialValue: col.title,
+    );
+    if (next != null && next.trim().isNotEmpty) {
+      await ref.read(appControllerProvider.notifier).renameCollection(col, next);
     }
   }
 }

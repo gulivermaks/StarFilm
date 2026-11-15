@@ -51,6 +51,7 @@ class AppControllerState {
     this.recommendations = const [],
     this.isPicking = false,
     this.usedFallback = false,
+    this.lastDiscoveryError = '',
     this.recentShownIds = const {},
     this.recentShownLabels = const [],
   });
@@ -78,6 +79,7 @@ class AppControllerState {
   final List<RecommendationCard> recommendations;
   final bool isPicking;
   final bool usedFallback;
+  final String lastDiscoveryError;
   final Set<String> recentShownIds;
   final List<String> recentShownLabels;
 
@@ -124,6 +126,7 @@ class AppControllerState {
     List<RecommendationCard>? recommendations,
     bool? isPicking,
     bool? usedFallback,
+    String? lastDiscoveryError,
     Set<String>? recentShownIds,
     List<String>? recentShownLabels,
   }) {
@@ -151,6 +154,7 @@ class AppControllerState {
       recommendations: recommendations ?? this.recommendations,
       isPicking: isPicking ?? this.isPicking,
       usedFallback: usedFallback ?? this.usedFallback,
+      lastDiscoveryError: lastDiscoveryError ?? this.lastDiscoveryError,
       recentShownIds: recentShownIds ?? this.recentShownIds,
       recentShownLabels: recentShownLabels ?? this.recentShownLabels,
     );
@@ -377,6 +381,7 @@ class AppController extends Notifier<AppControllerState> {
       entries: entries,
       collections: collections,
       recommendations: const [],
+      lastDiscoveryError: '',
     );
   }
 
@@ -506,9 +511,19 @@ class AppController extends Notifier<AppControllerState> {
     state = state.copyWith(entries: entries, pendingSyncCount: pendingCount);
   }
 
-  Future<void> createCollection(String title) async {
+  Future<void> _saveAndRefreshCollection(UserCollection collection) async {
+    await _s.repo.saveCollection(collection, accountUid: state.cloudUid);
+    final collections = await _s.repo.listCollections(state.activeProfileId);
+    final pendingCount = await _s.repo.pendingChangesCount();
+    state = state.copyWith(
+      collections: collections,
+      pendingSyncCount: pendingCount,
+    );
+  }
+
+  Future<UserCollection?> createCollection(String title) async {
     final trimmed = title.trim();
-    if (trimmed.isEmpty) return;
+    if (trimmed.isEmpty) return null;
     final now = DateTime.now().millisecondsSinceEpoch;
     final col = UserCollection(
       id: 'col_$now',
@@ -517,9 +532,39 @@ class AppController extends Notifier<AppControllerState> {
       mediaKeys: const [],
       clientUpdatedAt: now,
     );
-    await _s.repo.saveCollection(col, accountUid: state.cloudUid);
-    final collections = await _s.repo.listCollections(state.activeProfileId);
-    state = state.copyWith(collections: collections);
+    await _saveAndRefreshCollection(col);
+    return col;
+  }
+
+  Future<void> renameCollection(UserCollection col, String newTitle) async {
+    final trimmed = newTitle.trim();
+    if (trimmed.isEmpty || trimmed == col.title) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    await _saveAndRefreshCollection(
+      UserCollection(
+        id: col.id,
+        profileId: col.profileId,
+        title: trimmed,
+        mediaKeys: col.mediaKeys,
+        clientUpdatedAt: now,
+        serverSyncedAt: col.serverSyncedAt,
+      ),
+    );
+  }
+
+  Future<void> deleteCollection(UserCollection col) async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    await _saveAndRefreshCollection(
+      UserCollection(
+        id: col.id,
+        profileId: col.profileId,
+        title: col.title,
+        mediaKeys: col.mediaKeys,
+        clientUpdatedAt: now,
+        serverSyncedAt: col.serverSyncedAt,
+        deletedAt: now,
+      ),
+    );
   }
 
   Future<void> toggleItemInCollection(UserCollection col, MediaKey key) async {
@@ -535,15 +580,14 @@ class AppController extends Notifier<AppControllerState> {
       title: col.title,
       mediaKeys: keys,
       clientUpdatedAt: DateTime.now().millisecondsSinceEpoch,
+      serverSyncedAt: col.serverSyncedAt,
     );
-    await _s.repo.saveCollection(updated, accountUid: state.cloudUid);
-    final collections = await _s.repo.listCollections(state.activeProfileId);
-    state = state.copyWith(collections: collections);
+    await _saveAndRefreshCollection(updated);
   }
 
   Future<void> runDiscovery(DiscoveryRequest request) async {
     if (state.tmdbKey.trim().isEmpty) return;
-    state = state.copyWith(isPicking: true);
+    state = state.copyWith(isPicking: true, lastDiscoveryError: '');
     try {
       final result = await _s.discovery.recommend(
         tmdbApiKey: state.tmdbKey,
@@ -582,7 +626,7 @@ class AppController extends Notifier<AppControllerState> {
       );
     } catch (e) {
       _s.log.error('Discovery failed: $e');
-      state = state.copyWith(isPicking: false);
+      state = state.copyWith(isPicking: false, lastDiscoveryError: '$e');
     }
   }
 

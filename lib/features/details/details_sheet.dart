@@ -5,7 +5,9 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../app/app_state.dart';
 import '../../app/theme.dart';
+import '../../core/models/library_entry.dart';
 import '../../core/models/media_key.dart';
+import '../library/backup_codec.dart';
 import '../players/mobile_players.dart';
 import '../search/tmdb_client.dart';
 
@@ -297,8 +299,32 @@ class _MediaDetailsSheetState extends ConsumerState<MediaDetailsSheet> {
             ],
           ),
           const SizedBox(height: 14),
-          // Personal rating 1..10
-          Text(s.t('your_rating'), style: const TextStyle(fontWeight: FontWeight.w600)),
+          // Personal rating 1..10 & clear toggle
+          Row(
+            children: [
+              Text(s.t('your_rating'), style: const TextStyle(fontWeight: FontWeight.w600)),
+              if (existing?.userRating != null) ...[
+                const Spacer(),
+                TextButton(
+                  style: TextButton.styleFrom(
+                    minimumSize: Size.zero,
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  onPressed: () => _saveAction(
+                    title: title,
+                    originalTitle: originalTitle,
+                    year: year,
+                    posterPath: posterPath,
+                    genreIds: genreIds,
+                    tmdbRating: rating,
+                    clearRating: true,
+                  ),
+                  child: Text(s.t('clear_rating'), style: const TextStyle(fontSize: 12)),
+                ),
+              ],
+            ],
+          ),
           const SizedBox(height: 8),
           SingleChildScrollView(
             scrollDirection: Axis.horizontal,
@@ -310,24 +336,79 @@ class _MediaDetailsSheetState extends ConsumerState<MediaDetailsSheet> {
                     child: ChoiceChip(
                       label: Text('$i'),
                       selected: existing?.userRating == i,
-                      onSelected: (_) {
-                        ref.read(appControllerProvider.notifier).saveEntryAction(
-                              mediaType: widget.mediaType,
-                              tmdbId: widget.tmdbId,
-                              title: title,
-                              originalTitle: originalTitle,
-                              year: year,
-                              posterPath: posterPath,
-                              genreIds: genreIds,
-                              tmdbRating: rating,
-                              runtimeMinutes: _details?.runtimeMinutes,
-                              userRating: i,
-                            );
-                      },
+                      onSelected: (_) => _saveAction(
+                        title: title,
+                        originalTitle: originalTitle,
+                        year: year,
+                        posterPath: posterPath,
+                        genreIds: genreIds,
+                        tmdbRating: rating,
+                        userRating: existing?.userRating == i ? null : i,
+                        clearRating: existing?.userRating == i,
+                      ),
                     ),
                   ),
               ],
             ),
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              ChoiceChip(
+                avatar: Icon(
+                  existing?.sentiment == Sentiment.liked
+                      ? Icons.thumb_up
+                      : Icons.thumb_up_outlined,
+                  size: 16,
+                ),
+                label: Text(s.t('like')),
+                selected: existing?.sentiment == Sentiment.liked,
+                onSelected: (_) {
+                  final next = existing?.sentiment == Sentiment.liked
+                      ? Sentiment.neutral
+                      : Sentiment.liked;
+                  _saveAction(
+                    title: title,
+                    originalTitle: originalTitle,
+                    year: year,
+                    posterPath: posterPath,
+                    genreIds: genreIds,
+                    tmdbRating: rating,
+                    status: (next == Sentiment.liked &&
+                            existing?.status == WatchStatus.dismissed)
+                        ? WatchStatus.none
+                        : null,
+                    sentiment: next,
+                  );
+                },
+              ),
+              ChoiceChip(
+                avatar: Icon(
+                  existing?.sentiment == Sentiment.disliked
+                      ? Icons.thumb_down
+                      : Icons.thumb_down_outlined,
+                  size: 16,
+                ),
+                label: Text(s.t('dislike')),
+                selected: existing?.sentiment == Sentiment.disliked,
+                onSelected: (_) {
+                  final next = existing?.sentiment == Sentiment.disliked
+                      ? Sentiment.neutral
+                      : Sentiment.disliked;
+                  _saveAction(
+                    title: title,
+                    originalTitle: originalTitle,
+                    year: year,
+                    posterPath: posterPath,
+                    genreIds: genreIds,
+                    tmdbRating: rating,
+                    sentiment: next,
+                  );
+                },
+              ),
+            ],
           ),
           const SizedBox(height: 16),
           // Watch buttons
@@ -372,6 +453,51 @@ class _MediaDetailsSheetState extends ConsumerState<MediaDetailsSheet> {
             },
             icon: const Icon(Icons.ondemand_video),
             label: Text(s.t('trailer')),
+          ),
+          const SizedBox(height: 14),
+          // Collections selector
+          Text(s.t('collections'), style: const TextStyle(fontWeight: FontWeight.w600)),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final col in state.collections)
+                FilterChip(
+                  label: Text(col.title),
+                  selected: col.mediaKeys.contains(key.value),
+                  onSelected: (_) => _toggleCollectionMembership(
+                    col,
+                    existing: existing,
+                    mediaKey: key,
+                    title: title,
+                    originalTitle: originalTitle,
+                    year: year,
+                    posterPath: posterPath,
+                    genreIds: genreIds,
+                    tmdbRating: rating,
+                  ),
+                ),
+              ActionChip(
+                avatar: const Icon(Icons.create_new_folder_outlined, size: 16),
+                label: Text(s.t('new_collection')),
+                onPressed: () => _createCollectionAndAdd(
+                  context,
+                  s.t('new_collection'),
+                  s.t('cancel'),
+                  s.t('ok'),
+                  s.t('collection_name'),
+                  existing: existing,
+                  mediaKey: key,
+                  title: title,
+                  originalTitle: originalTitle,
+                  year: year,
+                  posterPath: posterPath,
+                  genreIds: genreIds,
+                  tmdbRating: rating,
+                ),
+              ),
+            ],
           ),
           const SizedBox(height: 16),
           if (_loading)
@@ -439,16 +565,19 @@ class _MediaDetailsSheetState extends ConsumerState<MediaDetailsSheet> {
     );
   }
 
-  void _saveStatus(
-    WatchStatus status,
-    String title,
-    String originalTitle,
-    int? year,
-    String posterPath,
-    List<int> genreIds,
-    double? tmdbRating,
-  ) {
-    ref.read(appControllerProvider.notifier).saveEntryAction(
+  Future<void> _saveAction({
+    required String title,
+    required String originalTitle,
+    required int? year,
+    required String posterPath,
+    required List<int> genreIds,
+    required double? tmdbRating,
+    WatchStatus? status,
+    int? userRating,
+    bool clearRating = false,
+    Sentiment? sentiment,
+  }) {
+    return ref.read(appControllerProvider.notifier).saveEntryAction(
           mediaType: widget.mediaType,
           tmdbId: widget.tmdbId,
           title: title,
@@ -459,7 +588,108 @@ class _MediaDetailsSheetState extends ConsumerState<MediaDetailsSheet> {
           tmdbRating: tmdbRating,
           runtimeMinutes: _details?.runtimeMinutes,
           status: status,
+          userRating: userRating,
+          clearRating: clearRating,
+          sentiment: sentiment,
         );
+  }
+
+  void _saveStatus(
+    WatchStatus status,
+    String title,
+    String originalTitle,
+    int? year,
+    String posterPath,
+    List<int> genreIds,
+    double? tmdbRating,
+  ) {
+    _saveAction(
+      title: title,
+      originalTitle: originalTitle,
+      year: year,
+      posterPath: posterPath,
+      genreIds: genreIds,
+      tmdbRating: tmdbRating,
+      status: status,
+    );
+  }
+
+  Future<void> _toggleCollectionMembership(
+    UserCollection col, {
+    required LibraryEntry? existing,
+    required MediaKey mediaKey,
+    required String title,
+    required String originalTitle,
+    required int? year,
+    required String posterPath,
+    required List<int> genreIds,
+    required double? tmdbRating,
+  }) async {
+    if (existing == null && !col.mediaKeys.contains(mediaKey.value)) {
+      await _saveAction(
+        title: title,
+        originalTitle: originalTitle,
+        year: year,
+        posterPath: posterPath,
+        genreIds: genreIds,
+        tmdbRating: tmdbRating,
+        status: WatchStatus.none,
+      );
+    }
+    await ref.read(appControllerProvider.notifier).toggleItemInCollection(col, mediaKey);
+  }
+
+  Future<void> _createCollectionAndAdd(
+    BuildContext context,
+    String dialogTitle,
+    String cancelLabel,
+    String okLabel,
+    String hintLabel, {
+    required LibraryEntry? existing,
+    required MediaKey mediaKey,
+    required String title,
+    required String originalTitle,
+    required int? year,
+    required String posterPath,
+    required List<int> genreIds,
+    required double? tmdbRating,
+  }) async {
+    final ctrl = TextEditingController();
+    final createdName = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: StarFilmColors.surface,
+        title: Text(dialogTitle),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          decoration: InputDecoration(hintText: hintLabel),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: Text(cancelLabel)),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, ctrl.text),
+            child: Text(okLabel),
+          ),
+        ],
+      ),
+    );
+    if (createdName == null || createdName.trim().isEmpty) return;
+    final col =
+        await ref.read(appControllerProvider.notifier).createCollection(createdName);
+    if (col != null) {
+      await _toggleCollectionMembership(
+        col,
+        existing: existing,
+        mediaKey: mediaKey,
+        title: title,
+        originalTitle: originalTitle,
+        year: year,
+        posterPath: posterPath,
+        genreIds: genreIds,
+        tmdbRating: tmdbRating,
+      );
+    }
   }
 
   Future<void> _watchOnPhone(String title, String originalTitle, int? year) async {

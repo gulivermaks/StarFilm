@@ -139,16 +139,25 @@ class DiscoveryService {
 
       for (final type in targetTypes) {
         if (verified.length >= 8) break;
-        final discovered = await _tmdb.discoverFallback(
-          apiKey: tmdbApiKey,
-          mediaType: type,
-          contentLanguage: contentLang,
-          withGenres: presetGenres,
-          withoutGenres: excludedGenres.toList(),
-          maxRuntimeMinutes: maxRuntime,
-          minRating: 6.5,
-          page: request.different ? 2 : 1,
-        );
+        final List<TmdbSearchCandidate> discovered;
+        try {
+          discovered = await _tmdb.discoverFallback(
+            apiKey: tmdbApiKey,
+            mediaType: type,
+            contentLanguage: contentLang,
+            withGenres: presetGenres,
+            withoutGenres: excludedGenres.toList(),
+            maxRuntimeMinutes: maxRuntime,
+            minRating: 6.5,
+            page: request.different ? 2 : 1,
+          );
+        } catch (e) {
+          if (verified.isNotEmpty) {
+            _log?.warn('TMDB discover backfill failed: $e');
+            break;
+          }
+          rethrow;
+        }
         for (final item in discovered) {
           if (verified.length >= 8) break;
           final key = MediaKey(item.mediaType, item.tmdbId).value;

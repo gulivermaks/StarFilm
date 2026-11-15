@@ -124,13 +124,37 @@
     - Проверен прямой перевод: после выставления оценки `7` (статус `Просмотрено`) нажатие «Хочу посмотреть» сразу перевело карточку в `Хочу посмотреть` (`selected="true"`) со сбросом оценки; тестовая запись удалена.
     - «Діагностика» после проверки: `Журнал порожній` (0 ошибок и 0 предупреждений).
 
+- [x] **Реализован и опубликован релиз `v0.05` (`versionCode=5`, `60.38 MB`):**
+  - **Коллекции (полный цикл UI + controller)** ([app_state.dart](lib/app/app_state.dart), [details_sheet.dart](lib/features/details/details_sheet.dart), [library_tab.dart](lib/features/library/library_tab.dart)):
+    - В `AppController` добавлены `renameCollection`, `deleteCollection` (soft-delete через `deletedAt` tombstone), общий `_saveAndRefreshCollection` с обновлением `pendingSyncCount`, а `createCollection` возвращает созданную коллекцию для мгновенного добавления тайтла.
+    - В `MediaDetailsSheet` добавлен блок «Колекції» с `FilterChip` (автосохранением метаданных записи с `WatchStatus.none`, если её ещё нет в локальной базе) и кнопкой `+ Нова колекція`.
+    - В `LibraryTab` («Моє → Колекції») карточки коллекций стали раскрывающимися (`ExpansionTile`) со списком входящих тайтлов, открытием `MediaDetailsSheet` по тапу, удалением тайтла из коллекции и меню «Перейменувати» / «Видалити».
+  - **Сигналы вкуса (`Like` / `Dislike`) и снятие оценки** ([details_sheet.dart](lib/features/details/details_sheet.dart)):
+    - В карточку деталей добавлены чипы `Подобається` / `Не подобається` (повторный тап сбрасывает в `neutral`; выбор `Like` на `dismissed` сбрасывает статус в `none`, чтобы `normalized()` не затёр лайк).
+    - Добавлено снятие оценки (`Зняти оцінку` и повторный тап по активной цифре `1..10`) с сохранением статуса просмотра и `sentiment`.
+  - **Видимая обратная связь для ИИ-подбора, облака и OTA-обновлений** ([tmdb_client.dart](lib/features/search/tmdb_client.dart), [discovery_service.dart](lib/features/discovery/discovery_service.dart), [app_state.dart](lib/app/app_state.dart), [discovery_tab.dart](lib/features/discovery/discovery_tab.dart), [settings_screen.dart](lib/features/settings/settings_screen.dart)):
+    - `TmdbClient.discoverFallback` теперь выбрасывает `TmdbHttpException` при ошибке HTTP, а `DiscoveryService.recommend` пробрасывает ошибку, если ИИ-кандидаты не найдены (`lastDiscoveryError` отображается в красной карточке на вкладке «Підбір»).
+    - Кнопка облачной синхронизации в `SettingsScreen` показывает `SnackBar` с итогом (`↑pushed / ↓pulled`, квота `sync_quota` или ошибка).
+    - `SettingsScreen._checkUpdates` при наличии новой версии открывает `showUpdateAvailableDialog` с `releaseNotes` и кнопкой «Завантажити APK» (`url_launcher` внешним приложением).
+  - **Локализация `uk / ru / en`** ([l10n.dart](lib/app/l10n.dart), [discovery_tab.dart](lib/features/discovery/discovery_tab.dart), [search_tab.dart](lib/features/search/search_tab.dart), [library_tab.dart](lib/features/library/library_tab.dart), [settings_screen.dart](lib/features/settings/settings_screen.dart)): заменены оставшиеся захардкоженные украинские строки на всех основных экранах (сортировка, жанры, быстрые кнопки, ошибки TMDB, диалоги настроек и диагностики).
+  - **Проверки `v0.05`**:
+    - `flutter analyze` → `No issues found!`
+    - `flutter test` → `29/29` пройдены (добавлены [collections_and_controller_test.dart](test/collections_and_controller_test.dart) и [collections_and_ui_widget_test.dart](test/collections_and_ui_widget_test.dart)).
+    - `powershell -NoProfile -File tools/build_apk.ps1` → собран релизный `StarFilm.apk v0.05 (code 5, 60.38 MB)` без ошибок.
+  - **Живая проверка `v0.05` на Pixel XL (USB `HT6AD0200687`)**:
+    - `adb install -r StarFilm.apk` → `Success`; в Настройках отображается `Проверить обновления v0.05 (5)`, все разделы, диалоги и вкладки («Поиск», «Моё», «Настройки») полностью локализованы на `ru`.
+    - Облачная синхронизация вывела `SnackBar`: `Синхронизировано (↑10, ↓8)`.
+    - Через «Поиск» (`Inception`) открыта карточка `Начало`: поставлена оценка `7`, нажато `Нравится`, создана коллекция `TestCol` с автодобавлением фильма, затем повторным тапом по `7` оценка успешно сброшена.
+    - В «Моё → Коллекции» раскрыта `TestCol (Тайтлов: 1)`, тайтл убран, коллекция `TestCol` удалена, тестовая запись `Начало` удалена из «Просмотрено» и синхронизирована в облако.
+    - «Диагностика» после E2E-проверки: `Журнал пуст`.
+
 ---
 
 ## 5. На каком этапе остановились и что дальше
 
-- **Текущий этап**: [StarFilm.apk](StarFilm.apk) **`v0.04` (`versionCode=4`)** проверен в автотестах и на физическом Pixel XL, подготовлен к публикации на GitHub (`gulivermaks/StarFilm`).
+- **Текущий этап**: Релиз **`v0.05` (`versionCode=5`)** проверен автотестами (`29/29`), на физическом Pixel XL и опубликован на GitHub (`gulivermaks/StarFilm`).
 - **Следующий шаг**:
-  1. Доработка серверной стороны StarTV по [STARTV_STARFILM_SYNC_PLAN.md](file:///D:/Обучение/AndroidTV-AI/STARTV_STARFILM_SYNC_PLAN.md) (только по отдельной команде владельца для `AndroidTV-AI/free-my-tv`) и живой тест связки `StarFilm ⇄ StarTV` в LAN (`Мій домашній ТВ` / `Гостьовий ТВ`).
+  1. Проверка/реализация оставшейся полировки `StarFilm` (`v0.06`, без приставки StarTV) и (по отдельной команде владельца) доработка серверной стороны `StarTV`.
 
 ---
 

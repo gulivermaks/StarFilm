@@ -362,7 +362,9 @@ class TmdbClient {
     }
 
     final res = await _get(apiKey, '/3/discover/${mediaType.wireValue}', params);
-    if (!res.isOk) return const [];
+    if (!res.isOk) {
+      throw TmdbHttpException(res.statusCode, 'HTTP ${res.statusCode}');
+    }
     final data = jsonDecode(res.body);
     if (data is! Map<String, dynamic>) return const [];
     final list = data['results'] as List<dynamic>? ?? const [];

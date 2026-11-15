@@ -155,6 +155,17 @@ class _DiscoveryTabState extends ConsumerState<DiscoveryTab> {
               ),
             ),
           ),
+        ] else if (state.lastDiscoveryError.isNotEmpty && !state.isPicking) ...[
+          const SizedBox(height: 16),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Text(
+                s.t('pick_error', {'e': state.lastDiscoveryError}),
+                style: const TextStyle(color: StarFilmColors.error),
+              ),
+            ),
+          ),
         ],
         if (state.usedFallback && state.recommendations.isNotEmpty) ...[
           const SizedBox(height: 10),
@@ -244,15 +255,15 @@ class _DiscoveryTabState extends ConsumerState<DiscoveryTab> {
                       runSpacing: 6,
                       children: [
                         _quickBtn(
-                          label: 'Хочу',
+                          label: s.t('quick_want'),
                           onTap: () => _mark(card, WatchStatus.watchlist),
                         ),
                         _quickBtn(
-                          label: 'Бачив',
+                          label: s.t('quick_seen'),
                           onTap: () => _mark(card, WatchStatus.watched),
                         ),
                         _quickBtn(
-                          label: 'Ні',
+                          label: s.t('quick_no'),
                           onTap: () => _mark(card, WatchStatus.dismissed),
                         ),
                       ],

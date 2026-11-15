@@ -6,16 +6,19 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../app/app_state.dart';
 import '../../app/l10n.dart';
 import '../../app/theme.dart';
 import '../../core/models/media_key.dart';
 import '../../core/models/profile.dart';
+import '../cloud_sync/cloud_sync_models.dart';
 import '../discovery/gemini_client.dart';
 import '../library/backup_codec.dart';
 import '../players/mobile_players.dart';
 import '../startv/startv_pairing_dialog.dart';
+import 'ota_updater.dart';
 
 class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
@@ -73,6 +76,52 @@ class SettingsScreen extends ConsumerStatefulWidget {
     );
   }
 
+  /// Displays release details and opens the APK asset link in an external browser/installer.
+  static Future<void> showUpdateAvailableDialog(
+    BuildContext context, {
+    required ReleaseAssetInfo release,
+    required AppStrings strings,
+    Future<bool> Function(Uri uri)? onDownload,
+  }) {
+    final notes = release.releaseNotes.trim();
+    return showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: StarFilmColors.surface,
+        title: Text(strings.t('update_available_title', {'v': release.versionName})),
+        content: notes.isEmpty
+            ? null
+            : SizedBox(
+                width: double.maxFinite,
+                child: SingleChildScrollView(
+                  child: Text(notes, style: const TextStyle(height: 1.4)),
+                ),
+              ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text(strings.t('close')),
+          ),
+          FilledButton.icon(
+            onPressed: () async {
+              final uri = Uri.tryParse(release.downloadUrl);
+              Navigator.pop(ctx);
+              if (uri != null) {
+                if (onDownload != null) {
+                  await onDownload(uri);
+                } else {
+                  await launchUrl(uri, mode: LaunchMode.externalApplication);
+                }
+              }
+            },
+            icon: const Icon(Icons.download_rounded),
+            label: Text(strings.t('update_download_apk')),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   ConsumerState<SettingsScreen> createState() => _SettingsScreenState();
 }
@@ -111,7 +160,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 color: p.id == state.activeProfileId ? StarFilmColors.lime : null,
               ),
               title: Text(p.name),
-              subtitle: Text(p.isMain ? 'Основний' : p.id),
+              subtitle: Text(p.isMain ? s.t('profile_main') : p.id),
               onTap: () => ref.read(appControllerProvider.notifier).switchProfile(p.id),
               trailing: p.isMain
                   ? null
@@ -132,13 +181,17 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           _sectionHeader('${s.t('tmdb_key')} / ${s.t('gemini_key')}'),
           ListTile(
             title: Text(s.t('tmdb_key')),
-            subtitle: Text(state.tmdbKey.isEmpty ? 'Не налаштовано' : 'Налаштовано (локально)'),
+            subtitle: Text(
+              state.tmdbKey.isEmpty ? s.t('key_missing') : s.t('key_saved_local'),
+            ),
             trailing: const Icon(Icons.edit),
             onTap: () => _editKeyDialog(isTmdb: true, current: state.tmdbKey),
           ),
           ListTile(
             title: Text(s.t('gemini_key')),
-            subtitle: Text(state.geminiKey.isEmpty ? 'Не налаштовано' : 'Налаштовано (локально)'),
+            subtitle: Text(
+              state.geminiKey.isEmpty ? s.t('key_missing') : s.t('key_saved_local'),
+            ),
             trailing: const Icon(Icons.edit),
             onTap: () => _editKeyDialog(isTmdb: false, current: state.geminiKey),
           ),
@@ -197,7 +250,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           ),
           ListTile(
             title: Text(s.t('excluded_genres')),
-            subtitle: Text('${state.activeProfile.preferences.excludedGenres.length} вибрано'),
+            subtitle: Text(
+              s.t('excluded_count', {'n': state.activeProfile.preferences.excludedGenres.length}),
+            ),
             trailing: const Icon(Icons.tune),
             onTap: () => _editExcludedGenres(context, state),
           ),
@@ -216,12 +271,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             title: Text(
               state.cloudUid.isNotEmpty
                   ? state.cloudEmail
-                  : (state.firebaseConfigured ? s.t('sync_offline') : 'Локальний режим'),
+                  : (state.firebaseConfigured ? s.t('sync_offline') : s.t('local_mode')),
             ),
             subtitle: Text(
               state.firebaseConfigured
-                  ? 'Очікує синхронізації: ${state.pendingSyncCount}'
-                  : 'Очікує google-services.json для Firebase Spark',
+                  ? s.t('sync_pending', {'n': state.pendingSyncCount})
+                  : s.t('firebase_missing'),
             ),
           ),
           const SizedBox(height: 6),
@@ -237,8 +292,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               children: [
                 Expanded(
                   child: OutlinedButton(
-                    onPressed: () =>
-                        ref.read(appControllerProvider.notifier).syncCloudNow(),
+                    onPressed: _syncCloud,
                     child: Text(s.t('sync_now')),
                   ),
                 ),
@@ -350,16 +404,17 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   }
 
   Future<void> _addProfile(BuildContext context) async {
+    final s = ref.read(appControllerProvider).strings;
     final ctrl = TextEditingController();
     final name = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: StarFilmColors.surface,
-        title: const Text('Новий профіль'),
+        title: Text(s.t('new_profile')),
         content: TextField(controller: ctrl, maxLength: 24, autofocus: true),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Скасувати')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, ctrl.text), child: const Text('ОК')),
+          TextButton(onPressed: () => Navigator.pop(ctx), child: Text(s.t('cancel'))),
+          FilledButton(onPressed: () => Navigator.pop(ctx, ctrl.text), child: Text(s.t('ok'))),
         ],
       ),
     );
@@ -389,7 +444,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 controller: ctrl,
                 autofocus: true,
                 decoration: InputDecoration(
-                  hintText: isTmdb ? 'v3 API Key або v4 Read Access Token' : 'AIza...',
+                  hintText: isTmdb ? s.t('tmdb_key_hint') : 'AIza...',
                   suffixIcon: ok == null
                       ? null
                       : Icon(
@@ -513,7 +568,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     );
                 Navigator.pop(ctx);
               },
-              child: const Text('ОК'),
+              child: Text(state.strings.t('ok')),
             ),
           ],
         ),
@@ -521,13 +576,32 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     );
   }
 
+  Future<void> _syncCloud() async {
+    final s = ref.read(appControllerProvider).strings;
+    final res = await ref.read(appControllerProvider.notifier).syncCloudNow();
+    if (!mounted) return;
+    final msg = switch (res.state) {
+      SyncStatusState.synced => s.t('sync_done', {
+          'pushed': res.pushedCount,
+          'pulled': res.pulledCount,
+        }),
+      SyncStatusState.quotaExceeded => s.t('sync_quota'),
+      SyncStatusState.error => s.t('sync_error', {'e': res.message}),
+      SyncStatusState.notConfigured => s.t('sync_offline'),
+      SyncStatusState.offlineLocal => s.t('local_mode'),
+      SyncStatusState.syncing => s.t('sync_now'),
+    };
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
   Future<void> _syncTv() async {
+    final s = ref.read(appControllerProvider).strings;
     setState(() => _syncingTv = true);
     try {
       final count = await ref.read(appControllerProvider.notifier).syncWithHomeTv();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Синхронізовано записів: $count')),
+          SnackBar(content: Text(s.t('tv_synced_count', {'n': count}))),
         );
       }
     } catch (e) {
@@ -540,11 +614,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   }
 
   Future<void> _transferKeys() async {
+    final s = ref.read(appControllerProvider).strings;
     try {
       await ref.read(appControllerProvider.notifier).transferKeysToHomeTv();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Ключі передано на StarTV')),
+          SnackBar(content: Text(s.t('tv_keys_sent'))),
         );
       }
     } catch (e) {
@@ -596,29 +671,31 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         .importBackupBundle(bundle, mode: mode);
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Імпортовано записів: $count')),
+        SnackBar(content: Text(s.t('backup_imported_count', {'n': count}))),
       );
     }
   }
 
   void _showDiagnostics(BuildContext context) {
+    final s = ref.read(appControllerProvider).strings;
     final logText = ref.read(appServicesProvider).log.exportText();
     showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: StarFilmColors.surface,
-        title: const Text('Діагностика'),
+        title: Text(s.t('diagnostics')),
         content: SingleChildScrollView(
-          child: SelectableText(logText.isEmpty ? 'Журнал порожній' : logText),
+          child: SelectableText(logText.isEmpty ? s.t('diagnostics_empty') : logText),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Закрити')),
+          TextButton(onPressed: () => Navigator.pop(ctx), child: Text(s.t('close'))),
         ],
       ),
     );
   }
 
   Future<void> _checkUpdates() async {
+    final s = ref.read(appControllerProvider).strings;
     setState(() => _checkingUpdates = true);
     try {
       final info = await PackageInfo.fromPlatform();
@@ -627,15 +704,17 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           .updater
           .checkLatest(currentVersion: info.version);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            latest == null
-                ? 'У вас актуальна версія (${info.version})'
-                : 'Доступне оновлення StarFilm ${latest.versionName}',
-          ),
-        ),
-      );
+      if (latest == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(s.t('update_up_to_date', {'v': info.version}))),
+        );
+      } else {
+        await SettingsScreen.showUpdateAvailableDialog(
+          context,
+          release: latest,
+          strings: s,
+        );
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));

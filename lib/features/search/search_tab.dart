@@ -79,20 +79,22 @@ class _SearchTabState extends ConsumerState<SearchTab> {
       }
     } on TmdbHttpException catch (e) {
       if (mounted) {
+        final s = ref.read(appControllerProvider).strings;
         setState(() {
           _results = const [];
           _searching = false;
           _errorMessage = e.statusCode == 401
-              ? 'Недійсний TMDB API Key (HTTP 401). Перевірте ключ у налаштуваннях.'
-              : 'Помилка TMDB (${e.message}). Спробуйте пізніше.';
+              ? s.t('tmdb_error_401')
+              : s.t('tmdb_error_http', {'msg': e.message});
         });
       }
     } catch (e) {
       if (mounted) {
+        final s = ref.read(appControllerProvider).strings;
         setState(() {
           _results = const [];
           _searching = false;
-          _errorMessage = 'Помилка з’єднання з TMDB: $e';
+          _errorMessage = s.t('tmdb_error_conn', {'e': '$e'});
         });
       }
     }
@@ -161,7 +163,7 @@ class _SearchTabState extends ConsumerState<SearchTab> {
                     PopupMenuButton<int?>(
                       onSelected: (g) => setState(() => _selectedGenre = g),
                       itemBuilder: (_) => [
-                        const PopupMenuItem<int?>(value: null, child: Text('Усі жанри')),
+                        PopupMenuItem<int?>(value: null, child: Text(s.t('all_genres'))),
                         for (final g in kStandardGenres)
                           PopupMenuItem<int?>(
                             value: g.id,
@@ -171,7 +173,7 @@ class _SearchTabState extends ConsumerState<SearchTab> {
                       child: Chip(
                         label: Text(
                           _selectedGenre == null
-                              ? 'Жанр'
+                              ? s.t('genre')
                               : kStandardGenres
                                   .firstWhere((g) => g.id == _selectedGenre)
                                   .labelFor(state.uiLanguage),
@@ -194,7 +196,7 @@ class _SearchTabState extends ConsumerState<SearchTab> {
                       _errorMessage ??
                           (state.tmdbKey.isEmpty
                               ? s.t('pick_need_tmdb')
-                              : (_searched ? 'Нічого не знайдено' : s.t('search_empty'))),
+                              : (_searched ? s.t('search_no_results') : s.t('search_empty'))),
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         color: _errorMessage != null
@@ -235,7 +237,7 @@ class _SearchTabState extends ConsumerState<SearchTab> {
                           spacing: 4,
                           children: [
                             IconButton(
-                              tooltip: 'Хочу',
+                              tooltip: s.t('quick_want'),
                               icon: const Icon(Icons.bookmark_add_outlined),
                               onPressed: () => ref
                                   .read(appControllerProvider.notifier)
@@ -252,7 +254,7 @@ class _SearchTabState extends ConsumerState<SearchTab> {
                                   ),
                             ),
                             IconButton(
-                              tooltip: 'Бачив',
+                              tooltip: s.t('quick_seen'),
                               icon: const Icon(Icons.check_circle_outline),
                               onPressed: () => ref
                                   .read(appControllerProvider.notifier)
