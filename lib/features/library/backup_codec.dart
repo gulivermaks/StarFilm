@@ -4,6 +4,8 @@ import '../../core/models/library_entry.dart';
 import '../../core/models/media_key.dart';
 import '../../core/models/profile.dart';
 
+enum BackupImportMode { merge, replace }
+
 class UserCollection {
   const UserCollection({
     required this.id,

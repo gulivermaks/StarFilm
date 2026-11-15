@@ -20,7 +20,10 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   final _geminiController = TextEditingController();
   bool? _tmdbOk;
   bool? _geminiOk;
-  bool _verifying = false;
+  String? _tmdbMessage;
+  String? _geminiMessage;
+  bool _verifyingTmdb = false;
+  bool _verifyingGemini = false;
 
   @override
   void dispose() {
@@ -29,33 +32,70 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
     super.dispose();
   }
 
-  Future<void> _verifyKeys() async {
-    setState(() => _verifying = true);
-    final services = ref.read(appServicesProvider);
-    final tmdb = _tmdbController.text.trim();
-    final gemini = _geminiController.text.trim();
-    bool? tOk;
-    bool? gOk;
-    if (tmdb.isNotEmpty) {
-      tOk = await services.tmdb.verifyKey(tmdb);
-    }
-    if (gemini.isNotEmpty) {
-      gOk = await services.gemini.verifyKey(
-        gemini,
-        model: ref.read(appControllerProvider).geminiModel,
-      );
-    }
-    await ref.read(appControllerProvider.notifier).setApiKeys(
-          tmdbKey: tmdb,
-          geminiKey: gemini,
-        );
-    if (mounted) {
+  Future<void> _verifySingleKey({required bool isTmdb}) async {
+    final s = ref.read(appControllerProvider).strings;
+    final controller = isTmdb ? _tmdbController : _geminiController;
+    final val = controller.text.trim();
+
+    if (val.isEmpty) {
       setState(() {
-        _tmdbOk = tOk;
-        _geminiOk = gOk;
-        _verifying = false;
+        if (isTmdb) {
+          _tmdbOk = false;
+          _tmdbMessage = s.t('key_empty');
+        } else {
+          _geminiOk = false;
+          _geminiMessage = s.t('key_empty');
+        }
       });
+      return;
     }
+
+    setState(() {
+      if (isTmdb) {
+        _verifyingTmdb = true;
+        _tmdbMessage = null;
+      } else {
+        _verifyingGemini = true;
+        _geminiMessage = null;
+      }
+    });
+
+    bool ok = false;
+    String message;
+    try {
+      final services = ref.read(appServicesProvider);
+      ok = isTmdb
+          ? await services.tmdb.verifyKey(val)
+          : await services.gemini.verifyKey(
+              val,
+              model: ref.read(appControllerProvider).geminiModel,
+            );
+      if (ok) {
+        await ref.read(appControllerProvider.notifier).setApiKeys(
+              tmdbKey: isTmdb ? val : null,
+              geminiKey: isTmdb ? null : val,
+            );
+        message = s.t('key_verified_ok');
+      } else {
+        message = s.t('key_rejected');
+      }
+    } catch (e) {
+      ok = false;
+      message = s.t('key_verify_error', {'e': '$e'});
+    }
+
+    if (!mounted) return;
+    setState(() {
+      if (isTmdb) {
+        _verifyingTmdb = false;
+        _tmdbOk = ok;
+        _tmdbMessage = message;
+      } else {
+        _verifyingGemini = false;
+        _geminiOk = ok;
+        _geminiMessage = message;
+      }
+    });
   }
 
   @override
@@ -162,6 +202,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
 
       case 1:
         return ListView(
+          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
           children: [
             Text(
               s.t('onboarding_keys_title'),
@@ -173,62 +214,46 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
               style: TextStyle(color: StarFilmColors.textSecondary),
             ),
             const SizedBox(height: 16),
-            TextField(
+            _buildKeyFieldSection(
+              keyFieldId: 'onboarding_tmdb',
               controller: _tmdbController,
-              decoration: InputDecoration(
-                labelText: s.t('tmdb_key'),
-                suffixIcon: _tmdbOk == null
-                    ? null
-                    : Icon(
-                        _tmdbOk! ? Icons.check_circle : Icons.error,
-                        color: _tmdbOk! ? StarFilmColors.success : StarFilmColors.error,
-                      ),
-              ),
+              label: s.t('tmdb_key'),
+              linkLabel: 'Отримати TMDB API key →',
+              linkUri: Uri.https('www.themoviedb.org', '/settings/api'),
+              verifying: _verifyingTmdb,
+              ok: _tmdbOk,
+              statusMessage: _tmdbMessage,
+              verifyLabel: s.t('verify'),
+              onVerify: () => _verifySingleKey(isTmdb: true),
+              onChanged: () {
+                if (_tmdbOk != null || _tmdbMessage != null) {
+                  setState(() {
+                    _tmdbOk = null;
+                    _tmdbMessage = null;
+                  });
+                }
+              },
             ),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: TextButton(
-                onPressed: () => launchUrl(
-                  Uri.https('www.themoviedb.org', '/settings/api'),
-                  mode: LaunchMode.externalApplication,
-                ),
-                child: const Text('Отримати TMDB API key →'),
-              ),
-            ),
-            const SizedBox(height: 8),
-            TextField(
+            const SizedBox(height: 14),
+            _buildKeyFieldSection(
+              keyFieldId: 'onboarding_gemini',
               controller: _geminiController,
-              decoration: InputDecoration(
-                labelText: '${s.t('gemini_key')} (опціонально)',
-                suffixIcon: _geminiOk == null
-                    ? null
-                    : Icon(
-                        _geminiOk! ? Icons.check_circle : Icons.error,
-                        color: _geminiOk! ? StarFilmColors.success : StarFilmColors.error,
-                      ),
-              ),
-            ),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: TextButton(
-                onPressed: () => launchUrl(
-                  Uri.https('aistudio.google.com', '/apikey'),
-                  mode: LaunchMode.externalApplication,
-                ),
-                child: const Text('Отримати Gemini API key →'),
-              ),
-            ),
-            const SizedBox(height: 8),
-            OutlinedButton.icon(
-              onPressed: _verifying ? null : _verifyKeys,
-              icon: _verifying
-                  ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.verified_outlined),
-              label: Text(s.t('verify')),
+              label: '${s.t('gemini_key')} (опціонально)',
+              linkLabel: 'Отримати Gemini API key →',
+              linkUri: Uri.https('aistudio.google.com', '/apikey'),
+              verifying: _verifyingGemini,
+              ok: _geminiOk,
+              statusMessage: _geminiMessage,
+              verifyLabel: s.t('verify'),
+              onVerify: () => _verifySingleKey(isTmdb: false),
+              onChanged: () {
+                if (_geminiOk != null || _geminiMessage != null) {
+                  setState(() {
+                    _geminiOk = null;
+                    _geminiMessage = null;
+                  });
+                }
+              },
             ),
           ],
         );
@@ -336,5 +361,97 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
           ],
         );
     }
+  }
+
+  Widget _buildKeyFieldSection({
+    required String keyFieldId,
+    required TextEditingController controller,
+    required String label,
+    required String linkLabel,
+    required Uri linkUri,
+    required bool verifying,
+    required bool? ok,
+    required String? statusMessage,
+    required String verifyLabel,
+    required VoidCallback onVerify,
+    required VoidCallback onChanged,
+  }) {
+    final statusColor = ok == true ? StarFilmColors.success : StarFilmColors.error;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        TextField(
+          key: Key('${keyFieldId}_field'),
+          controller: controller,
+          onChanged: (_) => onChanged(),
+          decoration: InputDecoration(
+            labelText: label,
+            suffixIcon: ok == null
+                ? null
+                : Icon(
+                    ok ? Icons.check_circle : Icons.error,
+                    color: statusColor,
+                  ),
+          ),
+        ),
+        const SizedBox(height: 6),
+        Row(
+          children: [
+            OutlinedButton.icon(
+              key: Key('${keyFieldId}_verify'),
+              onPressed: verifying ? null : onVerify,
+              style: OutlinedButton.styleFrom(
+                minimumSize: const Size(0, 38),
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+              ),
+              icon: verifying
+                  ? const SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.verified_outlined, size: 18),
+              label: Text(verifyLabel),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Align(
+                alignment: Alignment.centerRight,
+                child: TextButton(
+                  onPressed: () => launchUrl(
+                    linkUri,
+                    mode: LaunchMode.externalApplication,
+                  ),
+                  child: Text(
+                    linkLabel,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+        if (statusMessage != null) ...[
+          const SizedBox(height: 4),
+          Row(
+            children: [
+              Icon(
+                ok == true ? Icons.check_circle_outline : Icons.error_outline,
+                size: 15,
+                color: statusColor,
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  statusMessage,
+                  key: Key('${keyFieldId}_status'),
+                  style: TextStyle(color: statusColor, fontSize: 12),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ],
+    );
   }
 }

@@ -108,26 +108,36 @@
   - Повторно прогнаны правила Firestore в эмуляторе (`firebase emulators:exec --only firestore` → `3/3` теста пройдены).
   - Проверен `release_github.ps1 -DryRun`: `apksigner verify` подтвердил подпись (`CN=StarFilm`, SHA-1 `1e98...`), `gh auth status` и репозиторий `https://github.com/gulivermaks/StarFilm` готовы, SHA-256 APK: `85894e74f6e3b1e546572ac2a0e98a2a4cc5790b089a39d5a9b38b9edc1367cb`.
 
+- [x] **Обновление `v0.04` (`versionCode=4`, `60.2 MB`) — закрытие всех 5 замечаний бэклога**:
+  - **Локализованное название в буфер обмена** ([mobile_players.dart](lib/features/players/mobile_players.dart)): в `PlayerLaunchPlanner.plan()` приоритет переключён на локализованный `title` с fallback на `originalTitle` (единообразно для буфера обмена и поискового fallback URI).
+  - **Инлайн-проверка ключей на онбординге** ([onboarding_screen.dart](lib/features/onboarding/onboarding_screen.dart)): для TMDB и Gemini вынесены отдельные кнопки `Перевірити` и текстовый статус результата прямо под каждым полем, чтобы экранная клавиатура не перекрывала проверку.
+  - **Прямой перевод `Переглянуто` → `Хочу подивитися`** ([app_state.dart](lib/app/app_state.dart), [library_entry.dart](lib/core/models/library_entry.dart)): в `saveEntryAction` явный перевод в `watchlist`/`none`/`dismissed` очищает прежнюю оценку (а `merge()` разрешает конфликт `watchlist` vs `userRating` по более свежему `statusChangedAt > ratingChangedAt`), сохраняя автопереход в `watched` только при выставлении новой оценки. Причина: `normalized()` ранее возвращал старую оценку и откатывал статус обратно в `watched`.
+  - **Импорт JSON-бэкапа с выбором режима** ([library_repository.dart](lib/features/library/library_repository.dart), [settings_screen.dart](lib/features/settings/settings_screen.dart)): добавлен диалог выбора **«Об'єднати (додати новіші)»** vs **«Відновити стан з копії (замінити бібліотеку)»** и метод `replaceFromBackupBundle()`, который атомарно восстанавливает снимок и ставит tombstones (`deletedAt`) на добавленные позже записи/коллекции/неактуальные профили, чтобы облачная синхронизация не воскрешала их.
+  - **HDRezka MOD и иконка StarFilm** ([mobile_players.dart](lib/features/players/mobile_players.dart), [AndroidManifest.xml](android/app/src/main/AndroidManifest.xml), [MainActivity.kt](android/app/src/main/kotlin/app/starfilm/android/MainActivity.kt), `android/app/src/main/res/mipmap-*/ic_launcher.png`): обновлён пакет `to.pda.falcofemoralis.hdrezkaapp`, добавлен запуск установленного Android-приложения через `MethodChannel('app.starfilm.android/launcher')` (`getLaunchIntentForPackage`) с fallback в браузер, а также сгенерированы непрозрачные иконки `mipmap-mdpi..xxxhdpi` из [docs/logo.png](docs/logo.png) на фоне `#0B0D11`.
+  - **Проверки `v0.04`**:
+    - `flutter analyze` → `No issues found!`
+    - `flutter test` → `23/23` пройдено (добавлены [mobile_players_test.dart](test/mobile_players_test.dart), [onboarding_and_backup_widget_test.dart](test/onboarding_and_backup_widget_test.dart), расширен [library_and_merge_test.dart](test/library_and_merge_test.dart)).
+    - `tools/build_apk.ps1` → собран релизный [StarFilm.apk](StarFilm.apk) `v0.04` (`versionCode=4`, `60.2 MB`), `apksigner verify` подтвердил подпись (`CN=StarFilm`, SHA-1 `1e98ae2e8e8515d5c8ef00b9f705ea7305951da9`), SHA-256 APK: `8285211ab4f9dd9207eef9bbf65b47bdd8d0e2432e89df04456c0791cb879e19`.
+  - **Живая проверка `v0.04` на Pixel XL (`192.168.47.247:5555`)**:
+    - `adb install -r StarFilm.apk` поверх `v0.03` — успешно (`versionCode=4`, `versionName=0.04`), профиль и ключи сохранились; в Настройках отображается `v0.04 (4)` и выбран плеер `HDRezka`.
+    - Через «Поиск» открыта карточка `Начало` (`Inception`, 2010): кнопка «Смотреть на телефоне» успешно запустила `to.pda.falcofemoralis.hdrezkaapp/.views.MainActivity`.
+    - Проверен прямой перевод: после выставления оценки `7` (статус `Просмотрено`) нажатие «Хочу посмотреть» сразу перевело карточку в `Хочу посмотреть` (`selected="true"`) со сбросом оценки; тестовая запись удалена.
+    - «Діагностика» после проверки: `Журнал порожній` (0 ошибок и 0 предупреждений).
+
 ---
 
 ## 5. На каком этапе остановились и что дальше
 
-- **Текущий этап**: всё, что не требует участия пользователя, завершено. Релизный [StarFilm.apk](StarFilm.apk) **`v0.03` (`versionCode=3`)** установлен на **Pixel XL (`192.168.47.247:5555`)** и полностью проверен E2E.
-- **Осталось (требует участия/решения пользователя)**:
-  1. Пройти ручной чеклист (связка со StarTV в LAN, реальный плеер/YouTube на телефоне, при желании второй телефон/аккаунт для теста изоляции Firestore).
-  2. Публикация релиза `v0.03` на GitHub через [tools/release_github.ps1](tools/release_github.ps1).
+- **Текущий этап**: [StarFilm.apk](StarFilm.apk) **`v0.04` (`versionCode=4`)** проверен в автотестах и на физическом Pixel XL, подготовлен к публикации на GitHub (`gulivermaks/StarFilm`).
+- **Следующий шаг**:
+  1. Доработка серверной стороны StarTV по [STARTV_STARFILM_SYNC_PLAN.md](file:///D:/Обучение/AndroidTV-AI/STARTV_STARFILM_SYNC_PLAN.md) (только по отдельной команде владельца для `AndroidTV-AI/free-my-tv`) и живой тест связки `StarFilm ⇄ StarTV` в LAN (`Мій домашній ТВ` / `Гостьовий ТВ`).
 
 ---
 
-## 6. Бэклог на следующее обновление (v0.04, замечания от 2026-11-15 — код в v0.03 НЕ менялся)
+## 6. Бэклог на следующее обновление (закрыто в v0.04)
 
-1. **Локализованное название в буфер обмена** ([mobile_players.dart](lib/features/players/mobile_players.dart#L52)):
-   - Сейчас в `PlayerLaunchPlanner.plan()` приоритет у `originalTitle` (английское название). Переключить приоритет на отображаемое локализованное `title` (украинский/русский), с fallback на `originalTitle`.
-2. **Проверка ключей при первом запуске (Онбординг)** ([onboarding_screen.dart](lib/features/onboarding/onboarding_screen.dart#L163-L234)):
-   - Сейчас общая кнопка `Перевірити` внизу часто перекрывается экранной клавиатурой внутри `ListView`, а результат показывается только мелкой иконкой. Добавить понятную инлайн-кнопку/статус проверки с текстом успеха или причины ошибки прямо у полей TMDB и Gemini (как в Настройках).
-3. **Прямой перевод из «Переглянуто» в «Хочу подивитися»** ([library_entry.dart](lib/core/models/library_entry.dart#L81-L85)):
-   - Сейчас `LibraryEntry.normalized()` при наличии `userRating != null` принудительно возвращает статус `watchlist` обратно в `watched` (поэтому перевод работал только через `Дивлюся` → `Не цікавить`, где оценка обнулялась). Исправить инвариант/действие сохранения так, чтобы явный выбор `Хочу подивитися` переводил запись напрямую (а автопереход в `watched` происходил только при выставлении новой оценки).
-4. **Импорт JSON-бэкапа: режим восстановления снимка** ([library_repository.dart](lib/features/library/library_repository.dart#L266)):
-   - Сейчас `mergeImportedBundle()` делает только слияние по более свежему `clientUpdatedAt` и не удаляет добавленные после экспорта записи, поэтому откат библиотеки к более раннему экспорту не происходит. Добавить в диалоге импорта выбор: **«Відновити стан з копії (замінити бібліотеку)»** vs **«Об'єднати (додати новіші)»**.
-5. **Интеграция HDRezka MOD (`to.pda.falcofemoralis.hdrezkaapp`) и иконка приложения**:
-   - На Pixel XL установлен [hdrezka_mod.apk](file:///D:/Обучение/AndroidTV-AI-Ivan/hdrezka_mod.apk); фактический `package` = `to.pda.falcofemoralis.hdrezkaapp` (в [mobile_players.dart](lib/features/players/mobile_players.dart#L7) и [AndroidManifest.xml](android/app/src/main/AndroidManifest.xml#L50) пока указан `com.hdrezka.client`, а `_watchOnPhone` открывает только URI без запуска пакета). Обновить package name и добавить запуск установленного приложения по package/intent, а также перенести сгенерированный логотип StarFilm в `mipmap-*`.
+- [x] 1. Локализованное название в буфер обмена (`mobile_players.dart`).
+- [x] 2. Инлайн-проверка ключей на онбординге (`onboarding_screen.dart`).
+- [x] 3. Прямой перевод из «Переглянуто» в «Хочу подивитися» (`app_state.dart`, `library_entry.dart`).
+- [x] 4. Импорт JSON-бэкапа: режим восстановления снимка (`library_repository.dart`, `settings_screen.dart`).
+- [x] 5. Интеграция HDRezka MOD (`to.pda.falcofemoralis.hdrezkaapp`) и иконка приложения в `mipmap-*`.

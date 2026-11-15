@@ -1,10 +1,13 @@
+import 'package:flutter/services.dart';
+import 'package:url_launcher/url_launcher.dart';
+
 import '../../core/models/media_key.dart';
 
 enum MobilePlayerId {
   stremio('stremio', 'Stremio', 'com.stremio.one'),
   lampa('lampa', 'Lampa', 'top.rootu.lampa'),
   num('num', 'NUM', 'com.num.client'),
-  hdrezka('hdrezka', 'HDRezka', 'com.hdrezka.client'),
+  hdrezka('hdrezka', 'HDRezka', 'to.pda.falcofemoralis.hdrezkaapp'),
   webSearch('web_search', 'Browser Search', '');
 
   const MobilePlayerId(this.id, this.label, this.androidPackage);
@@ -49,7 +52,7 @@ class PlayerLaunchPlanner {
     int? year,
     String? imdbId,
   }) {
-    final searchQuery = originalTitle.trim().isNotEmpty ? originalTitle.trim() : title.trim();
+    final searchQuery = title.trim().isNotEmpty ? title.trim() : originalTitle.trim();
     final copyText = year != null && year > 0 ? '$searchQuery $year' : searchQuery;
     final webUri = Uri.https('www.google.com', '/search', {'q': '$copyText дивитися онлайн'});
 
@@ -89,5 +92,55 @@ class PlayerLaunchPlanner {
     }
     final q = year != null && year > 0 ? '$title $year trailer' : '$title trailer';
     return Uri.https('www.youtube.com', '/results', {'search_query': q});
+  }
+}
+
+/// Launches external Android player packages via platform channel with URI/web fallback.
+class MobilePlayerLauncher {
+  const MobilePlayerLauncher._();
+
+  static const MethodChannel _channel = MethodChannel('app.starfilm.android/launcher');
+
+  static Future<bool> launchAndroidPackage(String packageName) async {
+    final trimmed = packageName.trim();
+    if (trimmed.isEmpty) return false;
+    try {
+      final ok = await _channel.invokeMethod<bool>(
+        'launchPackage',
+        {'packageName': trimmed},
+      );
+      return ok ?? false;
+    } on MissingPluginException {
+      return false;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  static Future<bool> launch(
+    PlayerLaunchTarget target, {
+    Future<bool> Function(Uri uri)? openUri,
+    Future<bool> Function(String packageName)? openPackage,
+  }) async {
+    final uriOpener = openUri ??
+        ((uri) => launchUrl(uri, mode: LaunchMode.externalApplication));
+    final pkgOpener = openPackage ?? launchAndroidPackage;
+
+    if (target.deepLinkUri != null) {
+      try {
+        if (await uriOpener(target.deepLinkUri!)) return true;
+      } catch (_) {}
+    }
+    if (target.packageName != null && target.packageName!.isNotEmpty) {
+      if (await pkgOpener(target.packageName!)) return true;
+    }
+    if (target.fallbackWebUri != null) {
+      try {
+        return await uriOpener(target.fallbackWebUri!);
+      } catch (_) {
+        return false;
+      }
+    }
+    return false;
   }
 }

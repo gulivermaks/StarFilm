@@ -170,7 +170,7 @@ class LibraryEntry {
         (remote.sentimentChangedAt == local.sentimentChangedAt &&
             remote.clientUpdatedAt > local.clientUpdatedAt);
 
-    final mergedStatus = useRemoteStatus ? remote.status : local.status;
+    var mergedStatus = useRemoteStatus ? remote.status : local.status;
     var mergedRating = useRemoteRating ? remote.userRating : local.userRating;
     var mergedSentiment = useRemoteSentiment ? remote.sentiment : local.sentiment;
 
@@ -178,6 +178,18 @@ class LibraryEntry {
     if (mergedStatus == WatchStatus.dismissed) {
       if (mergedSentiment == Sentiment.liked) mergedSentiment = Sentiment.neutral;
       mergedRating = null;
+    } else if ((mergedStatus == WatchStatus.none ||
+            mergedStatus == WatchStatus.watchlist) &&
+        mergedRating != null) {
+      final mergedStatusTs =
+          useRemoteStatus ? remote.statusChangedAt : local.statusChangedAt;
+      final mergedRatingTs =
+          useRemoteRating ? remote.ratingChangedAt : local.ratingChangedAt;
+      if (mergedStatusTs > mergedRatingTs) {
+        mergedRating = null;
+      } else {
+        mergedStatus = WatchStatus.watched;
+      }
     }
 
     final newerMeta = remote.clientUpdatedAt >= local.clientUpdatedAt ? remote : local;

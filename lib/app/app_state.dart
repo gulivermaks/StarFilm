@@ -443,6 +443,15 @@ class AppController extends Notifier<AppControllerState> {
     final existing =
         await _s.repo.findEntry(state.activeProfileId, MediaKey(mediaType, tmdbId));
     final now = DateTime.now().millisecondsSinceEpoch;
+    final nextStatus = status ?? existing?.status ?? WatchStatus.none;
+    final clearsRatingForStatus = userRating == null &&
+        status != null &&
+        (status == WatchStatus.watchlist ||
+            status == WatchStatus.none ||
+            status == WatchStatus.dismissed);
+    final nextRating = (clearRating || clearsRatingForStatus)
+        ? null
+        : (userRating ?? existing?.userRating);
     final entry = LibraryEntry(
       profileId: state.activeProfileId,
       mediaType: mediaType,
@@ -454,8 +463,8 @@ class AppController extends Notifier<AppControllerState> {
       genreIds: genreIds,
       tmdbRating: tmdbRating ?? existing?.tmdbRating,
       runtimeMinutes: runtimeMinutes ?? existing?.runtimeMinutes,
-      status: status ?? existing?.status ?? WatchStatus.none,
-      userRating: clearRating ? null : (userRating ?? existing?.userRating),
+      status: nextStatus,
+      userRating: nextRating,
       sentiment: sentiment ?? existing?.sentiment ?? Sentiment.neutral,
       statusChangedAt: existing?.statusChangedAt ?? now,
       ratingChangedAt: existing?.ratingChangedAt ?? now,
@@ -716,15 +725,41 @@ class AppController extends Notifier<AppControllerState> {
     );
   }
 
-  Future<int> importBackupJson(String rawJson) async {
+  Future<int> importBackupJson(
+    String rawJson, {
+    BackupImportMode mode = BackupImportMode.merge,
+  }) async {
     final bundle = BackupCodec.decodeBackup(rawJson);
-    final merged = await _s.repo.mergeImportedBundle(
-      bundle,
-      deviceId: state.deviceId,
-      accountUid: state.cloudUid,
-    );
+    return importBackupBundle(bundle, mode: mode);
+  }
+
+  Future<int> importBackupBundle(
+    BackupBundle bundle, {
+    BackupImportMode mode = BackupImportMode.merge,
+  }) async {
+    final count = mode == BackupImportMode.replace
+        ? await _s.repo.replaceFromBackupBundle(
+            bundle,
+            deviceId: state.deviceId,
+            accountUid: state.cloudUid,
+          )
+        : await _s.repo.mergeImportedBundle(
+            bundle,
+            deviceId: state.deviceId,
+            accountUid: state.cloudUid,
+          );
+    if (mode == BackupImportMode.replace) {
+      final profiles = await _s.repo.listProfiles();
+      final hasActive = profiles.any((p) => p.id == state.activeProfileId);
+      final targetProfileId = profiles.any((p) => p.id == bundle.activeProfileId)
+          ? bundle.activeProfileId
+          : (hasActive ? state.activeProfileId : 'main');
+      if (targetProfileId != state.activeProfileId) {
+        await switchProfile(targetProfileId);
+      }
+    }
     await _refreshActiveProfileState();
-    return merged;
+    return count;
   }
 
   Future<void> _refreshActiveProfileState() async {

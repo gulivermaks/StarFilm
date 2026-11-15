@@ -328,6 +328,177 @@ class LibraryRepository {
     return mergedCount;
   }
 
+  /// Replaces local library state with an exact snapshot from [bundle].
+  /// Any local profiles (except `main`), entries, or collections absent from
+  /// [bundle] are soft-deleted with [nowMs] so subsequent cloud sync propagates
+  /// the rollback instead of resurrecting removed items.
+  Future<int> replaceFromBackupBundle(
+    BackupBundle bundle, {
+    required String deviceId,
+    String accountUid = '',
+    int? nowMs,
+    bool queueSync = true,
+  }) async {
+    if (bundle.profiles.isEmpty) {
+      throw const FormatException('Backup contains no profiles');
+    }
+    final ts = nowMs ?? DateTime.now().millisecondsSinceEpoch;
+    var restoredCount = 0;
+
+    await _db.transaction(() async {
+      final incomingProfiles = bundle.profiles.take(UserProfile.maxProfiles).toList();
+      final incomingProfileIds = incomingProfiles.map((p) => p.profile.id).toSet();
+
+      final existingProfiles = await listProfiles(includeDeleted: true);
+      for (final existing in existingProfiles) {
+        if (!incomingProfileIds.contains(existing.id)) {
+          await _softDeleteMissingEntriesAndCollections(
+            existing.id,
+            keepEntryKeys: const {},
+            keepCollectionIds: const {},
+            deviceId: deviceId,
+            accountUid: accountUid,
+            ts: ts,
+            queueSync: queueSync,
+          );
+          if (!existing.isMain && !existing.isDeleted) {
+            await saveProfile(
+              existing.copyWith(clientUpdatedAt: ts, deletedAt: ts),
+              accountUid: accountUid,
+              queueSync: queueSync,
+            );
+          }
+        }
+      }
+
+      for (final pBundle in incomingProfiles) {
+        final pid = pBundle.profile.id;
+        await saveProfile(
+          UserProfile(
+            id: pid,
+            name: pBundle.profile.name,
+            preferences: pBundle.profile.preferences,
+            clientUpdatedAt: ts,
+            serverSyncedAt: 0,
+            deletedAt: null,
+          ),
+          accountUid: accountUid,
+          queueSync: queueSync,
+        );
+
+        final incomingEntryKeys = pBundle.entries.map((e) => e.keyString).toSet();
+        final incomingColIds = pBundle.collections.map((c) => c.id).toSet();
+
+        await _softDeleteMissingEntriesAndCollections(
+          pid,
+          keepEntryKeys: incomingEntryKeys,
+          keepCollectionIds: incomingColIds,
+          deviceId: deviceId,
+          accountUid: accountUid,
+          ts: ts,
+          queueSync: queueSync,
+        );
+
+        for (final incoming in pBundle.entries) {
+          final normalized = incoming.normalized(nowMs: ts, deviceId: deviceId);
+          final restored = LibraryEntry(
+            profileId: pid,
+            mediaType: normalized.mediaType,
+            tmdbId: normalized.tmdbId,
+            title: normalized.title,
+            originalTitle: normalized.originalTitle,
+            year: normalized.year,
+            posterPath: normalized.posterPath,
+            genreIds: normalized.genreIds,
+            tmdbRating: normalized.tmdbRating,
+            runtimeMinutes: normalized.runtimeMinutes,
+            status: normalized.status,
+            userRating: normalized.userRating,
+            sentiment: normalized.sentiment,
+            statusChangedAt: ts,
+            ratingChangedAt: ts,
+            sentimentChangedAt: ts,
+            clientUpdatedAt: ts,
+            serverSyncedAt: 0,
+            deletedAt: null,
+            updatedByDevice: deviceId,
+          );
+          await _writeEntryRow(restored);
+          if (queueSync) {
+            await _enqueueChange(
+              accountUid: accountUid,
+              entityType: 'library',
+              profileId: pid,
+              entityKey: restored.firestoreId,
+              nowMs: ts,
+            );
+          }
+          restoredCount++;
+        }
+
+        for (final col in pBundle.collections) {
+          await saveCollection(
+            UserCollection(
+              id: col.id,
+              profileId: pid,
+              title: col.title,
+              mediaKeys: col.mediaKeys,
+              clientUpdatedAt: ts,
+              serverSyncedAt: 0,
+              deletedAt: null,
+            ),
+            accountUid: accountUid,
+            queueSync: queueSync,
+          );
+        }
+      }
+    });
+
+    return restoredCount;
+  }
+
+  Future<void> _softDeleteMissingEntriesAndCollections(
+    String profileId, {
+    required Set<String> keepEntryKeys,
+    required Set<String> keepCollectionIds,
+    required String deviceId,
+    required String accountUid,
+    required int ts,
+    required bool queueSync,
+  }) async {
+    final existingEntries = await listEntries(profileId, includeDeleted: false);
+    for (final existing in existingEntries) {
+      if (!keepEntryKeys.contains(existing.keyString)) {
+        await softDeleteEntry(
+          profileId,
+          existing.mediaKey,
+          deviceId: deviceId,
+          accountUid: accountUid,
+          nowMs: ts,
+          queueSync: queueSync,
+        );
+      }
+    }
+    final existingCols = await listCollections(profileId, includeDeleted: false);
+    for (final existingCol in existingCols) {
+      if (!keepCollectionIds.contains(existingCol.id)) {
+        await saveCollection(
+          UserCollection(
+            id: existingCol.id,
+            profileId: profileId,
+            title: existingCol.title,
+            mediaKeys: existingCol.mediaKeys,
+            clientUpdatedAt: ts,
+            serverSyncedAt: existingCol.serverSyncedAt,
+            deletedAt: ts,
+          ),
+          accountUid: accountUid,
+          queueSync: queueSync,
+        );
+      }
+    }
+  }
+
   Future<List<UserCollection>> listCollections(
     String profileId, {
     bool includeDeleted = false,

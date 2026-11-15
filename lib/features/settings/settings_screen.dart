@@ -8,15 +8,70 @@ import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../../app/app_state.dart';
+import '../../app/l10n.dart';
 import '../../app/theme.dart';
 import '../../core/models/media_key.dart';
 import '../../core/models/profile.dart';
 import '../discovery/gemini_client.dart';
+import '../library/backup_codec.dart';
 import '../players/mobile_players.dart';
 import '../startv/startv_pairing_dialog.dart';
 
 class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
+
+  static Future<BackupImportMode?> showBackupImportModeDialog(
+    BuildContext context, {
+    required BackupBundle bundle,
+    required AppStrings strings,
+  }) {
+    final entriesCount = bundle.profiles.fold<int>(
+      0,
+      (sum, p) => sum + p.entries.length,
+    );
+    final sourceLabel =
+        bundle.sourceFormat == 'startv' ? 'StarTV' : 'StarFilm';
+    return showDialog<BackupImportMode>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: StarFilmColors.surface,
+        title: Text(strings.t('backup_import_mode_title')),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              strings.t('backup_import_summary', {
+                'source': sourceLabel,
+                'profiles': bundle.profiles.length,
+                'entries': entriesCount,
+              }),
+              style: const TextStyle(
+                color: StarFilmColors.textSecondary,
+                fontSize: 13,
+              ),
+            ),
+            const SizedBox(height: 16),
+            OutlinedButton(
+              onPressed: () => Navigator.pop(ctx, BackupImportMode.merge),
+              child: Text(strings.t('backup_import_merge')),
+            ),
+            const SizedBox(height: 10),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, BackupImportMode.replace),
+              child: Text(strings.t('backup_import_replace')),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text(strings.t('cancel')),
+          ),
+        ],
+      ),
+    );
+  }
 
   @override
   ConsumerState<SettingsScreen> createState() => _SettingsScreenState();
@@ -314,6 +369,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   }
 
   Future<void> _editKeyDialog({required bool isTmdb, required String current}) async {
+    final s = ref.read(appControllerProvider).strings;
     final ctrl = TextEditingController(text: current);
     bool verifying = false;
     bool? ok;
@@ -324,7 +380,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setModalState) => AlertDialog(
           backgroundColor: StarFilmColors.surface,
-          title: Text(isTmdb ? 'TMDB API Key' : 'Gemini API Key'),
+          title: Text(isTmdb ? s.t('tmdb_key') : s.t('gemini_key')),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -350,9 +406,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 ),
               ] else if (ok == true) ...[
                 const SizedBox(height: 8),
-                const Text(
-                  'Ключ перевірено успішно',
-                  style: TextStyle(color: StarFilmColors.success, fontSize: 12),
+                Text(
+                  s.t('key_verified_ok'),
+                  style: const TextStyle(color: StarFilmColors.success, fontSize: 12),
                 ),
               ],
             ],
@@ -369,6 +425,14 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                       try {
                         final services = ref.read(appServicesProvider);
                         final val = ctrl.text.trim();
+                        if (val.isEmpty) {
+                          setModalState(() {
+                            verifying = false;
+                            ok = false;
+                            verifyError = s.t('key_empty');
+                          });
+                          return;
+                        }
                         final valid = isTmdb
                             ? await services.tmdb.verifyKey(val)
                             : await services.gemini.verifyKey(
@@ -378,22 +442,22 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                         setModalState(() {
                           verifying = false;
                           ok = valid;
-                          verifyError = valid ? null : 'Ключ не прийнято сервером';
+                          verifyError = valid ? null : s.t('key_rejected');
                         });
                       } catch (e) {
                         setModalState(() {
                           verifying = false;
                           ok = false;
-                          verifyError = 'Помилка перевірки: $e';
+                          verifyError = s.t('key_verify_error', {'e': '$e'});
                         });
                       }
                     },
-              child: Text(verifying ? '...' : 'Перевірити'),
+              child: Text(verifying ? '...' : s.t('verify')),
             ),
-            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Скасувати')),
+            TextButton(onPressed: () => Navigator.pop(ctx), child: Text(s.t('cancel'))),
             FilledButton(
               onPressed: () => Navigator.pop(ctx, ctrl.text),
-              child: const Text('Зберегти'),
+              child: Text(s.t('save')),
             ),
           ],
         ),
@@ -505,8 +569,31 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     );
     final path = res?.files.single.path;
     if (path == null) return;
-    final raw = await File(path).readAsString();
-    final count = await ref.read(appControllerProvider.notifier).importBackupJson(raw);
+    final s = ref.read(appControllerProvider).strings;
+    final BackupBundle bundle;
+    try {
+      final raw = await File(path).readAsString();
+      bundle = BackupCodec.decodeBackup(raw);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(s.t('backup_import_error', {'e': '$e'}))),
+        );
+      }
+      return;
+    }
+
+    if (!mounted) return;
+    final mode = await SettingsScreen.showBackupImportModeDialog(
+      context,
+      bundle: bundle,
+      strings: s,
+    );
+    if (mode == null) return;
+
+    final count = await ref
+        .read(appControllerProvider.notifier)
+        .importBackupBundle(bundle, mode: mode);
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Імпортовано записів: $count')),

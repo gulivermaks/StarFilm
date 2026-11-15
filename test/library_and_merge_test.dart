@@ -72,6 +72,35 @@ void main() {
     final merged = LibraryEntry.merge(phoneEntry, tvEntry);
     expect(merged.status, WatchStatus.watched);
     expect(merged.userRating, 9);
+
+    // Newer explicit move to watchlist clears older rating instead of snapping back to watched
+    const ratedWatched = LibraryEntry(
+      profileId: 'main',
+      mediaType: MediaType.movie,
+      tmdbId: 550,
+      title: 'Fight Club',
+      status: WatchStatus.watched,
+      userRating: 9,
+      statusChangedAt: 1000,
+      ratingChangedAt: 1000,
+      sentimentChangedAt: 1000,
+      clientUpdatedAt: 1000,
+    );
+    const movedToWatchlist = LibraryEntry(
+      profileId: 'main',
+      mediaType: MediaType.movie,
+      tmdbId: 550,
+      title: 'Fight Club',
+      status: WatchStatus.watchlist,
+      userRating: 9,
+      statusChangedAt: 2000,
+      ratingChangedAt: 1000,
+      sentimentChangedAt: 1000,
+      clientUpdatedAt: 2000,
+    );
+    final mergedToWatchlist = LibraryEntry.merge(ratedWatched, movedToWatchlist);
+    expect(mergedToWatchlist.status, WatchStatus.watchlist);
+    expect(mergedToWatchlist.userRating, isNull);
   });
 
   test('BackupCodec imports StarTV backup ignoring progressNote and round-trips StarFilm JSON', () {
@@ -136,5 +165,104 @@ void main() {
       () => repo.createProfile('Зайвий 5'),
       throwsA(isA<StateError>()),
     );
+  });
+
+  test('replaceFromBackupBundle restores exact snapshot and soft-deletes newer entries', () async {
+    final db = AppDatabase(NativeDatabase.memory());
+    addTearDown(db.close);
+    final repo = LibraryRepository(db);
+    await repo.ensureMainProfile(nowMs: 100);
+
+    // Initial state at t=1000 exported to backup
+    await repo.upsertEntry(
+      const LibraryEntry(
+        profileId: 'main',
+        mediaType: MediaType.movie,
+        tmdbId: 27205,
+        title: 'Початок',
+        status: WatchStatus.watchlist,
+      ),
+      deviceId: 'dev-1',
+      nowMs: 1000,
+    );
+    final snapshotJson = BackupCodec.encodeStarFilmBackup(
+      activeProfileId: 'main',
+      profiles: await repo.listProfiles(),
+      entriesByProfile: {'main': await repo.listEntries('main')},
+      collectionsByProfile: const {},
+      deletedByProfile: const {},
+    );
+
+    // Later edits at t=2000: modify existing entry, add a new entry, add a profile & collection
+    await repo.upsertEntry(
+      const LibraryEntry(
+        profileId: 'main',
+        mediaType: MediaType.movie,
+        tmdbId: 27205,
+        title: 'Початок',
+        status: WatchStatus.watched,
+        userRating: 10,
+      ),
+      deviceId: 'dev-1',
+      nowMs: 2000,
+    );
+    await repo.upsertEntry(
+      const LibraryEntry(
+        profileId: 'main',
+        mediaType: MediaType.movie,
+        tmdbId: 603,
+        title: 'Матриця',
+        status: WatchStatus.watched,
+        userRating: 9,
+      ),
+      deviceId: 'dev-1',
+      nowMs: 2000,
+    );
+    final extraProfile = await repo.createProfile('Гість', nowMs: 2000);
+    await repo.saveCollection(
+      const UserCollection(
+        id: 'col_extra',
+        profileId: 'main',
+        title: 'Нове',
+        mediaKeys: ['movie:603'],
+        clientUpdatedAt: 2000,
+      ),
+    );
+
+    final bundle = BackupCodec.decodeBackup(snapshotJson);
+
+    // Merge mode keeps newer edits and extra entry
+    await repo.mergeImportedBundle(bundle, deviceId: 'dev-1');
+    var mainEntries = await repo.listEntries('main');
+    expect(mainEntries.length, 2);
+    expect(
+      mainEntries.firstWhere((e) => e.tmdbId == 27205).status,
+      WatchStatus.watched,
+    );
+
+    // Replace mode restores snapshot verbatim and soft-deletes newer additions
+    final restoredCount = await repo.replaceFromBackupBundle(
+      bundle,
+      deviceId: 'dev-1',
+      nowMs: 3000,
+    );
+    expect(restoredCount, 1);
+
+    mainEntries = await repo.listEntries('main');
+    expect(mainEntries.length, 1);
+    expect(mainEntries.first.tmdbId, 27205);
+    expect(mainEntries.first.status, WatchStatus.watchlist);
+    expect(mainEntries.first.userRating, isNull);
+
+    final allWithTombstones = await repo.listEntries('main', includeDeleted: true);
+    final deletedMatrix = allWithTombstones.where((e) => e.tmdbId == 603).single;
+    expect(deletedMatrix.isDeleted, isTrue);
+
+    final activeProfiles = await repo.listProfiles();
+    expect(activeProfiles.map((p) => p.id), ['main']);
+    final allProfiles = await repo.listProfiles(includeDeleted: true);
+    expect(allProfiles.firstWhere((p) => p.id == extraProfile.id).isDeleted, isTrue);
+
+    expect(await repo.listCollections('main'), isEmpty);
   });
 }

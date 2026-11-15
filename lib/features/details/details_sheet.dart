@@ -463,7 +463,8 @@ class _MediaDetailsSheetState extends ConsumerState<MediaDetailsSheet> {
   }
 
   Future<void> _watchOnPhone(String title, String originalTitle, int? year) async {
-    final player = ref.read(appControllerProvider).preferredPlayer;
+    final state = ref.read(appControllerProvider);
+    final player = state.preferredPlayer;
     final target = PlayerLaunchPlanner.plan(
       player: player,
       mediaType: widget.mediaType,
@@ -473,17 +474,15 @@ class _MediaDetailsSheetState extends ConsumerState<MediaDetailsSheet> {
       imdbId: _details?.imdbId,
     );
     await Clipboard.setData(ClipboardData(text: target.clipboardText));
-
-    var launched = false;
-    if (target.deepLinkUri != null) {
-      launched = await launchUrl(
-        target.deepLinkUri!,
-        mode: LaunchMode.externalApplication,
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(state.strings.t('copied_title', {'title': target.clipboardText})),
+          duration: const Duration(seconds: 2),
+        ),
       );
     }
-    if (!launched && target.fallbackWebUri != null) {
-      await launchUrl(target.fallbackWebUri!, mode: LaunchMode.externalApplication);
-    }
+    await MobilePlayerLauncher.launch(target);
   }
 
   Future<void> _watchOnTv(String title, String originalTitle, int? year) async {

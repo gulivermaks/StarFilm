@@ -47,7 +47,7 @@
         <package android:name="com.stremio.one"/>
         <package android:name="top.rootu.lampa"/>
         <package android:name="com.num.client"/>
-        <package android:name="com.hdrezka.client"/>
+        <package android:name="to.pda.falcofemoralis.hdrezkaapp"/>
         <package android:name="com.google.android.youtube"/>
     </queries>
 </manifest>
