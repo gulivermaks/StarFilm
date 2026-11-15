@@ -49,7 +49,7 @@ class _StarTvPairingDialogState extends ConsumerState<StarTvPairingDialog> {
       if (qrRaw.isNotEmpty) {
         final parsed = StarTvQrPayload.tryParse(qrRaw);
         if (parsed == null) {
-          throw const FormatException('Некоректний QR/URL локальної приставки');
+          throw FormatException(ref.read(appControllerProvider).strings.t('startv_invalid_qr'));
         }
         ip = parsed.ip;
         port = parsed.port;
@@ -92,8 +92,8 @@ class _StarTvPairingDialogState extends ConsumerState<StarTvPairingDialog> {
           children: [
             TextField(
               controller: _qrUrlController,
-              decoration: const InputDecoration(
-                labelText: 'URL з QR (опціонально)',
+              decoration: InputDecoration(
+                labelText: ref.watch(appControllerProvider).strings.t('startv_qr_label'),
                 hintText: 'http://192.168.1.50:8088/?pin=123456',
               ),
             ),
@@ -101,13 +101,15 @@ class _StarTvPairingDialogState extends ConsumerState<StarTvPairingDialog> {
             TextField(
               controller: _ipController,
               keyboardType: TextInputType.number,
-              decoration: const InputDecoration(labelText: 'IP приставки (LAN)'),
+              decoration: InputDecoration(
+                labelText: ref.watch(appControllerProvider).strings.t('startv_ip_label'),
+              ),
             ),
             const SizedBox(height: 10),
             TextField(
               controller: _pinController,
               keyboardType: TextInputType.number,
-              decoration: const InputDecoration(labelText: '6-значний PIN'),
+              decoration: InputDecoration(labelText: s.t('startv_pin_label')),
             ),
             const SizedBox(height: 14),
             RadioListTile<StarTvTrustMode>(
@@ -115,14 +117,14 @@ class _StarTvPairingDialogState extends ConsumerState<StarTvPairingDialog> {
               groupValue: _trustMode,
               onChanged: (v) => setState(() => _trustMode = v!),
               title: Text(s.t('startv_home_mode')),
-              subtitle: const Text('Запуск, синхронізація бібліотеки та передача ключів'),
+              subtitle: Text(s.t('startv_home_desc')),
             ),
             RadioListTile<StarTvTrustMode>(
               value: StarTvTrustMode.guest,
               groupValue: _trustMode,
               onChanged: (v) => setState(() => _trustMode = v!),
               title: Text(s.t('startv_guest_mode')),
-              subtitle: const Text('Лише запуск відео/трейлерів без змішування бази'),
+              subtitle: Text(s.t('startv_guest_desc')),
             ),
             if (_error != null) ...[
               const SizedBox(height: 8),

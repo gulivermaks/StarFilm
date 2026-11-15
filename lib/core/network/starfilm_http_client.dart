@@ -52,6 +52,20 @@ class StarFilmHttpClient {
     }
   }
 
+  /// Opens a streaming HTTP request through the same LAN/HTTPS guard.
+  Future<http.StreamedResponse> sendStream(
+    http.BaseRequest request, {
+    Duration? timeout,
+  }) async {
+    LanGuard.requireAllowedUri(request.url);
+    try {
+      return await _client.send(request).timeout(timeout ?? defaultTimeout);
+    } catch (e) {
+      _log?.warn('STREAM ${request.url.host}${request.url.path} failed: $e');
+      rethrow;
+    }
+  }
+
   Future<HttpResult> postJson(
     Uri uri,
     Object body, {

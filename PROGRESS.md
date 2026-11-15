@@ -150,11 +150,21 @@
 
 ---
 
+- **Финализация `StarFilm v1.0` (`v0.06`, `versionCode=6`)**:
+  - Встроенный OTA-апдейт в приложении: потоковое скачивание в `cacheDir/updates` с прогресс-баром, проверкой размера и `SHA-256` (`lib/features/settings/ota_updater.dart`, `lib/core/network/starfilm_http_client.dart`), проверкой совпадения сертификата подписи APK и установкой через `OtaFileProvider` + `ACTION_INSTALL_PACKAGE`/`ACTION_VIEW` (`android/app/src/main/kotlin/app/starfilm/android/MainActivity.kt`, `OtaFileProvider.kt`, `starfilm_ota_paths.xml`, `AndroidManifest.xml`), плюс резервная кнопка «Открыть в браузере».
+  - Полная локализация `uk/ru/en` для оставшихся экранов и диалогов: `lib/features/onboarding/onboarding_screen.dart` (шаги 0–4, «Назад»/«Далее»), `lib/features/startv/startv_pairing_dialog.dart`, StarTV-снекбары в `lib/features/details/details_sheet.dart` (`lib/app/l10n.dart`).
+  - Сводная строка статусов в «Диагностика» над санитаризированным журналом (`TMDB • Gemini • Облако • Профилей • Записей • StarTV` в `lib/features/settings/settings_screen.dart`).
+  - Проверки `v0.06`:
+    - `flutter analyze` — `No issues found!`;
+    - `flutter test` — `31/31` (`All tests passed!`, добавлены unit-тест `OtaUpdater.downloadAndVerifyApk` в `test/ota_updater_test.dart` и widget-тесты OTA-диалога и локализации Onboarding/StarTV в `test/collections_and_ui_widget_test.dart`);
+    - `tools/build_apk.ps1` — собран подписанный `StarFilm.apk` `v0.06` (`versionCode=6`, `60.56 MB`);
+    - Живая проверка на физическом **Pixel XL (`HT6AD0200687`)**: `adb install -r StarFilm.apk` (`Success`), подтверждены локализованный диалог «Подключить StarTV», строка статуса в «Диагностика» (`TMDB: OK • Gemini: OK • Облако: OK • Профилей: 2 • Записей: 5 • StarTV: нет` + `Журнал пуст`), `Проверить обновления v0.06 (6)` и ответ `У вас актуальная версия (0.06)`.
+
 ## 5. На каком этапе остановились и что дальше
 
-- **Текущий этап**: Релиз **`v0.05` (`versionCode=5`)** проверен автотестами (`29/29`), на физическом Pixel XL и опубликован на GitHub (`gulivermaks/StarFilm`).
+- **Текущий этап**: Релиз **`v0.05` (`versionCode=5`)** опубликован на GitHub; итерация **`v0.06` (`versionCode=6`)** закрыла все оставшиеся задачи `StarFilm v1.0` на стороне телефона (`StarFilm_SPECIFICATION_v2.1_FREE.md`), собрана, проверена автотестами (`31/31`) и установлена/проверена на физическом Pixel XL.
 - **Следующий шаг**:
-  1. Проверка/реализация оставшейся полировки `StarFilm` (`v0.06`, без приставки StarTV) и (по отдельной команде владельца) доработка серверной стороны `StarTV`.
+  1. По явной команде владельца: публикация `v0.06` на GitHub (при необходимости), доработка серверной стороны `StarTV` на приставке, либо переход к бэклогу `v1.1+` (раздел 12 спецификации).
 
 ---
 

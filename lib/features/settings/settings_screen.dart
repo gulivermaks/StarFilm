@@ -76,48 +76,183 @@ class SettingsScreen extends ConsumerStatefulWidget {
     );
   }
 
-  /// Displays release details and opens the APK asset link in an external browser/installer.
+  /// Displays release details with in-app SHA-256 and certificate-verified
+  /// APK installation plus an external browser fallback link.
   static Future<void> showUpdateAvailableDialog(
     BuildContext context, {
     required ReleaseAssetInfo release,
     required AppStrings strings,
-    Future<bool> Function(Uri uri)? onDownload,
+    OtaUpdater? updater,
+    Future<Directory> Function()? getUpdatesDir,
+    Future<String> Function(String apkPath)? onInstallApk,
+    Future<bool> Function(Uri uri)? onOpenBrowser,
   }) {
     final notes = release.releaseNotes.trim();
+    var downloading = false;
+    var verifying = false;
+    double? progress;
+    String? errorText;
+
     return showDialog<void>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: StarFilmColors.surface,
-        title: Text(strings.t('update_available_title', {'v': release.versionName})),
-        content: notes.isEmpty
-            ? null
-            : SizedBox(
-                width: double.maxFinite,
-                child: SingleChildScrollView(
-                  child: Text(notes, style: const TextStyle(height: 1.4)),
-                ),
-              ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: Text(strings.t('close')),
-          ),
-          FilledButton.icon(
-            onPressed: () async {
-              final uri = Uri.tryParse(release.downloadUrl);
-              Navigator.pop(ctx);
-              if (uri != null) {
-                if (onDownload != null) {
-                  await onDownload(uri);
-                } else {
-                  await launchUrl(uri, mode: LaunchMode.externalApplication);
-                }
+      barrierDismissible: false,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) {
+          final busy = downloading || verifying;
+
+          Future<void> startInAppInstall() async {
+            if (busy) return;
+            setDialogState(() {
+              downloading = true;
+              verifying = false;
+              progress = null;
+              errorText = null;
+            });
+
+            File? downloadedFile;
+            try {
+              final activeUpdater = updater;
+              if (activeUpdater == null) {
+                throw OtaDownloadException('no_updater');
               }
-            },
-            icon: const Icon(Icons.download_rounded),
-            label: Text(strings.t('update_download_apk')),
-          ),
-        ],
+              final updatesDir = getUpdatesDir != null
+                  ? await getUpdatesDir()
+                  : Directory('${(await getTemporaryDirectory()).path}/updates');
+
+              downloadedFile = await activeUpdater.downloadAndVerifyApk(
+                release: release,
+                updatesDir: updatesDir,
+                onProgress: (received, total) {
+                  if (!ctx.mounted) return;
+                  setDialogState(() {
+                    progress = total > 0 ? (received / total).clamp(0.0, 1.0) : null;
+                  });
+                },
+              );
+
+              if (!ctx.mounted) return;
+              setDialogState(() {
+                downloading = false;
+                verifying = true;
+              });
+
+              final result = onInstallApk != null
+                  ? await onInstallApk(downloadedFile.path)
+                  : await OtaApkInstaller.verifyAndInstall(downloadedFile.path);
+
+              if (!ctx.mounted) return;
+              if (result == 'ok') {
+                Navigator.pop(ctx);
+                return;
+              }
+              if (result == 'signature_mismatch') {
+                if (await downloadedFile.exists()) {
+                  await downloadedFile.delete();
+                }
+                setDialogState(() {
+                  downloading = false;
+                  verifying = false;
+                  errorText = strings.t('update_sig_error');
+                });
+                return;
+              }
+              setDialogState(() {
+                downloading = false;
+                verifying = false;
+                errorText = strings.t('update_download_error', {'e': result});
+              });
+            } on OtaDownloadException catch (e) {
+              if (downloadedFile != null && await downloadedFile.exists()) {
+                await downloadedFile.delete();
+              }
+              if (!ctx.mounted) return;
+              setDialogState(() {
+                downloading = false;
+                verifying = false;
+                errorText = e.code == 'checksum_mismatch'
+                    ? strings.t('update_checksum_error')
+                    : strings.t('update_download_error', {'e': e.code});
+              });
+            } catch (e) {
+              if (!ctx.mounted) return;
+              setDialogState(() {
+                downloading = false;
+                verifying = false;
+                errorText = strings.t('update_download_error', {'e': '$e'});
+              });
+            }
+          }
+
+          return AlertDialog(
+            backgroundColor: StarFilmColors.surface,
+            title: Text(strings.t('update_available_title', {'v': release.versionName})),
+            content: SizedBox(
+              width: double.maxFinite,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (notes.isNotEmpty)
+                    Flexible(
+                      child: SingleChildScrollView(
+                        child: Text(notes, style: const TextStyle(height: 1.4)),
+                      ),
+                    ),
+                  if (busy) ...[
+                    if (notes.isNotEmpty) const SizedBox(height: 12),
+                    LinearProgressIndicator(value: verifying ? null : progress),
+                    const SizedBox(height: 8),
+                    Text(
+                      verifying
+                          ? strings.t('update_verifying')
+                          : strings.t('update_downloading', {
+                              'pct': ((progress ?? 0) * 100).round(),
+                            }),
+                      style: const TextStyle(
+                        color: StarFilmColors.textSecondary,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ],
+                  if (errorText != null) ...[
+                    const SizedBox(height: 10),
+                    Text(
+                      errorText!,
+                      style: const TextStyle(color: StarFilmColors.error, fontSize: 13),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: busy ? null : () => Navigator.pop(ctx),
+                child: Text(strings.t('close')),
+              ),
+              TextButton(
+                onPressed: busy
+                    ? null
+                    : () async {
+                        final uri = Uri.tryParse(release.downloadUrl);
+                        Navigator.pop(ctx);
+                        if (uri != null) {
+                          if (onOpenBrowser != null) {
+                            await onOpenBrowser(uri);
+                          } else {
+                            await launchUrl(uri, mode: LaunchMode.externalApplication);
+                          }
+                        }
+                      },
+                child: Text(strings.t('update_open_browser')),
+              ),
+              FilledButton.icon(
+                onPressed: busy ? null : startInAppInstall,
+                icon: const Icon(Icons.system_update_alt),
+                label: Text(strings.t('update_install_apk')),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
@@ -677,15 +812,27 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   }
 
   void _showDiagnostics(BuildContext context) {
-    final s = ref.read(appControllerProvider).strings;
+    final state = ref.read(appControllerProvider);
+    final s = state.strings;
+    final ok = s.t('diag_ok');
+    final no = s.t('diag_not_set');
+    final statusLine = s.t('diag_status_line', {
+      'tmdb': state.tmdbKey.trim().isNotEmpty ? ok : no,
+      'gemini': state.geminiKey.trim().isNotEmpty ? ok : no,
+      'cloud': state.cloudUid.isNotEmpty ? ok : no,
+      'profiles': state.profiles.length,
+      'entries': state.entries.length,
+      'tv': state.activeTv?.deviceName ?? no,
+    });
     final logText = ref.read(appServicesProvider).log.exportText();
+    final body = logText.isEmpty ? s.t('diagnostics_empty') : logText;
     showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: StarFilmColors.surface,
         title: Text(s.t('diagnostics')),
         content: SingleChildScrollView(
-          child: SelectableText(logText.isEmpty ? s.t('diagnostics_empty') : logText),
+          child: SelectableText('$statusLine\n\n$body'),
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx), child: Text(s.t('close'))),
@@ -696,13 +843,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
   Future<void> _checkUpdates() async {
     final s = ref.read(appControllerProvider).strings;
+    final updater = ref.read(appServicesProvider).updater;
     setState(() => _checkingUpdates = true);
     try {
       final info = await PackageInfo.fromPlatform();
-      final latest = await ref
-          .read(appServicesProvider)
-          .updater
-          .checkLatest(currentVersion: info.version);
+      final latest = await updater.checkLatest(currentVersion: info.version);
       if (!mounted) return;
       if (latest == null) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -713,6 +858,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           context,
           release: latest,
           strings: s,
+          updater: updater,
         );
       }
     } catch (e) {

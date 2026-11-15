@@ -29,6 +29,15 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+        <provider
+            android:name=".OtaFileProvider"
+            android:authorities="${applicationId}.ota.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/starfilm_ota_paths" />
+        </provider>
     </application>
 
     <queries>

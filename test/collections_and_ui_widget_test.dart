@@ -1,3 +1,7 @@
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:crypto/crypto.dart';
 import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -19,12 +23,14 @@ import 'package:starfilm/features/discovery/discovery_tab.dart';
 import 'package:starfilm/features/discovery/gemini_client.dart';
 import 'package:starfilm/features/library/library_repository.dart';
 import 'package:starfilm/features/library/library_tab.dart';
+import 'package:starfilm/features/onboarding/onboarding_screen.dart';
 import 'package:starfilm/features/search/search_tab.dart';
 import 'package:starfilm/features/search/tmdb_client.dart';
 import 'package:starfilm/features/settings/ota_updater.dart';
 import 'package:starfilm/features/settings/settings_screen.dart';
 import 'package:starfilm/features/startv/startv_client.dart';
 import 'package:starfilm/features/startv/startv_models.dart';
+import 'package:starfilm/features/startv/startv_pairing_dialog.dart';
 
 class _TestSecretStore extends SecretStore {
   _TestSecretStore({String initialTmdb = ''}) : _tmdb = initialTmdb;
@@ -297,16 +303,37 @@ void main() {
     expect(find.textContaining('Could not load picks:'), findsOneWidget);
   });
 
-  testWidgets('SettingsScreen.showUpdateAvailableDialog renders notes and triggers download',
+  testWidgets('SettingsScreen.showUpdateAvailableDialog supports browser fallback and verified OTA install',
       (tester) async {
+    final apkBytes = utf8.encode('signed-apk-content');
+    final digest = sha256.convert(apkBytes).toString();
     Uri? launchedUri;
-    final release = ReleaseAssetInfo(
-      versionName: '0.05',
-      downloadUrl: 'https://github.com/gulivermaks/StarFilm/releases/download/v0.05/StarFilm.apk',
-      expectedSize: 1024,
-      expectedSha256: 'abc',
-      releaseNotes: 'Collections & Sentiment UI',
+    String? installedPath;
+    String installResult = 'ok';
+    final tmpDir = await tester.runAsync(
+      () => Directory.systemTemp.createTemp('starfilm_ota_dlg_'),
     );
+    addTearDown(() async {
+      if (tmpDir != null && tmpDir.existsSync()) {
+        tmpDir.deleteSync(recursive: true);
+      }
+    });
+
+    final release = ReleaseAssetInfo(
+      versionName: '0.06',
+      downloadUrl: 'https://github.com/gulivermaks/StarFilm/releases/download/v0.06/StarFilm.apk',
+      expectedSize: apkBytes.length,
+      expectedSha256: digest,
+      releaseNotes: 'Verified OTA & full i18n',
+    );
+    final mockClient = MockClient(
+      (req) async => http.Response.bytes(
+        apkBytes,
+        200,
+        headers: {'content-length': '${apkBytes.length}'},
+      ),
+    );
+    final updater = OtaUpdater(StarFilmHttpClient(client: mockClient));
 
     await tester.pumpWidget(
       MaterialApp(
@@ -319,7 +346,13 @@ void main() {
                     context,
                     release: release,
                     strings: AppStrings('en'),
-                    onDownload: (uri) async {
+                    updater: updater,
+                    getUpdatesDir: () async => tmpDir!,
+                    onInstallApk: (path) async {
+                      installedPath = path;
+                      return installResult;
+                    },
+                    onOpenBrowser: (uri) async {
                       launchedUri = uri;
                       return true;
                     },
@@ -336,12 +369,84 @@ void main() {
     await tester.tap(find.text('ShowUpdate'));
     await tester.pumpAndSettle();
 
-    expect(find.text('StarFilm 0.05 update available'), findsOneWidget);
-    expect(find.text('Collections & Sentiment UI'), findsOneWidget);
+    expect(find.text('StarFilm 0.06 update available'), findsOneWidget);
+    expect(find.text('Verified OTA & full i18n'), findsOneWidget);
 
-    await tester.tap(find.text('Download APK'));
+    await tester.tap(find.text('Open in browser'));
+    await tester.pumpAndSettle();
+    expect(launchedUri?.toString(), release.downloadUrl);
+
+    // Reopen dialog and test verified in-app install.
+    await tester.tap(find.text('ShowUpdate'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Install update'));
+    for (var i = 0; i < 40 && installedPath == null; i++) {
+      await tester.pump();
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
+    }
+    await tester.pumpAndSettle();
+    expect(installedPath, endsWith('StarFilm-0.06.apk'));
+    expect(find.text('StarFilm 0.06 update available'), findsNothing);
+
+    // Reopen dialog and verify signature mismatch keeps dialog open with error.
+    installResult = 'signature_mismatch';
+    await tester.tap(find.text('ShowUpdate'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Install update'));
+    for (var i = 0; i < 40 &&
+        find.text('APK signing certificate mismatch — installation blocked').evaluate().isEmpty;
+        i++) {
+      await tester.pump();
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
+    }
+    await tester.pumpAndSettle();
+    expect(
+      find.text('APK signing certificate mismatch — installation blocked'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('OnboardingScreen and StarTvPairingDialog localize controls in English',
+      (tester) async {
+    SharedPreferences.setMockInitialValues({
+      'starfilm.onboarding_done': false,
+      'starfilm.ui_lang': 'en',
+    });
+    final db = AppDatabase(NativeDatabase.memory());
+    addTearDown(db.close);
+    final services = _makeUiTestServices(
+      db: db,
+      mockHttp: MockClient((_) async => http.Response('{}', 200)),
+    );
+    final container = await _bootTestContainer(tester, services);
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: const MaterialApp(home: OnboardingScreen()),
+      ),
+    );
     await tester.pumpAndSettle();
 
-    expect(launchedUri?.toString(), release.downloadUrl);
+    expect(find.text('Next'), findsOneWidget);
+    expect(find.text('Українська (default)'), findsOneWidget);
+    expect(find.text('Далі'), findsNothing);
+
+    await tester.tap(find.text('Next'));
+    await tester.pumpAndSettle();
+    expect(find.text('Back'), findsOneWidget);
+    expect(find.text('Get TMDB API key →'), findsOneWidget);
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: const MaterialApp(
+          home: Scaffold(body: StarTvPairingDialog()),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('TV IP address (LAN)'), findsOneWidget);
+    expect(find.text('6-digit PIN'), findsOneWidget);
   });
 }

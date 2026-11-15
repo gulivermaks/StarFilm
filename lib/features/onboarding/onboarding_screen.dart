@@ -137,7 +137,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                     Expanded(
                       child: OutlinedButton(
                         onPressed: () => setState(() => _step--),
-                        child: const Text('Назад'),
+                        child: Text(s.t('back')),
                       ),
                     ),
                     const SizedBox(width: 12),
@@ -159,7 +159,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                               .completeOnboarding();
                         }
                       },
-                      child: Text(_step < 4 ? 'Далі' : s.t('onboarding_start')),
+                      child: Text(_step < 4 ? s.t('next') : s.t('onboarding_start')),
                     ),
                   ),
                 ],
@@ -182,8 +182,8 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
               style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 12),
-            for (final item in const [
-              ('uk', 'Українська (за замовчуванням)'),
+            for (final item in [
+              ('uk', s.t('onboarding_lang_uk_default')),
               ('ru', 'Русский'),
               ('en', 'English'),
             ])
@@ -209,16 +209,16 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
               style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 8),
-            const Text(
-              'Особисті ключі зберігаються лише на вашому пристрої і ніколи не передаються в Firebase.',
-              style: TextStyle(color: StarFilmColors.textSecondary),
+            Text(
+              s.t('onboarding_keys_privacy'),
+              style: const TextStyle(color: StarFilmColors.textSecondary),
             ),
             const SizedBox(height: 16),
             _buildKeyFieldSection(
               keyFieldId: 'onboarding_tmdb',
               controller: _tmdbController,
               label: s.t('tmdb_key'),
-              linkLabel: 'Отримати TMDB API key →',
+              linkLabel: s.t('onboarding_get_tmdb'),
               linkUri: Uri.https('www.themoviedb.org', '/settings/api'),
               verifying: _verifyingTmdb,
               ok: _tmdbOk,
@@ -238,8 +238,8 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
             _buildKeyFieldSection(
               keyFieldId: 'onboarding_gemini',
               controller: _geminiController,
-              label: '${s.t('gemini_key')} (опціонально)',
-              linkLabel: 'Отримати Gemini API key →',
+              label: '${s.t('gemini_key')} (${s.t('optional')})',
+              linkLabel: s.t('onboarding_get_gemini'),
               linkUri: Uri.https('aistudio.google.com', '/apikey'),
               verifying: _verifyingGemini,
               ok: _geminiOk,
@@ -266,9 +266,9 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
               style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 10),
-            const Text(
-              'Локальна бібліотека завжди доступна без хмари. Хмарна синхронізація запрацює після підключення Firebase.',
-              style: TextStyle(color: StarFilmColors.textSecondary),
+            Text(
+              s.t('onboarding_sync_desc'),
+              style: const TextStyle(color: StarFilmColors.textSecondary),
             ),
             const SizedBox(height: 16),
             OutlinedButton.icon(
@@ -283,7 +283,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                     ? state.cloudEmail
                     : (state.firebaseConfigured
                         ? s.t('google_signin')
-                        : '${s.t('google_signin')} (очікує google-services.json)'),
+                        : '${s.t('google_signin')} (${s.t('google_signin_waiting')})'),
               ),
             ),
           ],
@@ -298,9 +298,9 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
               style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 8),
-            const Text(
-              'Оберіть жанри, які не потрібно пропонувати у підборі:',
-              style: TextStyle(color: StarFilmColors.textSecondary),
+            Text(
+              s.t('onboarding_excluded_hint'),
+              style: const TextStyle(color: StarFilmColors.textSecondary),
             ),
             const SizedBox(height: 12),
             Wrap(
@@ -339,9 +339,9 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
               style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 10),
-            const Text(
-              'За бажанням прив’яжіть приставку StarTV у домашній мережі Wi-Fi. Можна пропустити і зробити це пізніше.',
-              style: TextStyle(color: StarFilmColors.textSecondary),
+            Text(
+              s.t('onboarding_startv_desc'),
+              style: const TextStyle(color: StarFilmColors.textSecondary),
             ),
             const SizedBox(height: 16),
             OutlinedButton.icon(

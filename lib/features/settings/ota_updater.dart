@@ -2,6 +2,8 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
+import 'package:flutter/services.dart';
+import 'package:http/http.dart' as http;
 
 import '../../core/models/version_comparator.dart';
 import '../../core/network/starfilm_http_client.dart';
@@ -20,6 +22,35 @@ class ReleaseAssetInfo {
   final int expectedSize;
   final String? expectedSha256;
   final String releaseNotes;
+}
+
+class OtaDownloadException implements Exception {
+  const OtaDownloadException(this.code, [this.details = '']);
+
+  final String code;
+  final String details;
+
+  @override
+  String toString() => details.isEmpty ? code : '$code: $details';
+}
+
+class OtaApkInstaller {
+  static const MethodChannel _channel =
+      MethodChannel('app.starfilm.android/launcher');
+
+  /// Verifies APK signing certificate against the installed app and opens Android's installer.
+  static Future<String> verifyAndInstall(String apkPath) async {
+    try {
+      final res = await _channel.invokeMethod<String>('verifyAndInstallApk', {
+        'apkPath': apkPath,
+      });
+      return res ?? 'error:null';
+    } on PlatformException catch (e) {
+      return 'error:${e.message ?? e.code}';
+    } on MissingPluginException {
+      return 'error:unsupported';
+    }
+  }
 }
 
 class OtaUpdater {
@@ -76,6 +107,65 @@ class OtaUpdater {
       expectedSha256: sha,
       releaseNotes: (data['body'] ?? '').toString(),
     );
+  }
+
+  /// Downloads the release APK into [updatesDir], verifies byte size + SHA-256, and returns it.
+  Future<File> downloadAndVerifyApk({
+    required ReleaseAssetInfo release,
+    required Directory updatesDir,
+    void Function(int received, int total)? onProgress,
+  }) async {
+    if (!await updatesDir.exists()) {
+      await updatesDir.create(recursive: true);
+    }
+    final safeVer = release.versionName.replaceAll(RegExp(r'[^0-9A-Za-z._-]'), '_');
+    final targetFile = File('${updatesDir.path}/StarFilm-$safeVer.apk');
+    final tempFile = File('${targetFile.path}.part');
+    if (await tempFile.exists()) {
+      await tempFile.delete();
+    }
+
+    final req = http.Request('GET', Uri.parse(release.downloadUrl))
+      ..headers['User-Agent'] = 'StarFilm-Android';
+    final response = await _http.sendStream(
+      req,
+      timeout: const Duration(minutes: 4),
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw OtaDownloadException('http_${response.statusCode}');
+    }
+
+    final totalBytes =
+        (response.contentLength ?? 0) > 0 ? response.contentLength! : release.expectedSize;
+    var received = 0;
+    final sink = tempFile.openWrite();
+    try {
+      await for (final chunk in response.stream) {
+        sink.add(chunk);
+        received += chunk.length;
+        onProgress?.call(received, totalBytes);
+      }
+      await sink.flush();
+    } finally {
+      await sink.close();
+    }
+
+    final verified = await verifyDownloadedApk(
+      file: tempFile,
+      expectedSize: release.expectedSize,
+      expectedSha256: release.expectedSha256,
+    );
+    if (!verified) {
+      if (await tempFile.exists()) {
+        await tempFile.delete();
+      }
+      throw const OtaDownloadException('checksum_mismatch');
+    }
+
+    if (await targetFile.exists()) {
+      await targetFile.delete();
+    }
+    return tempFile.rename(targetFile.path);
   }
 
   static Future<bool> verifyDownloadedApk({

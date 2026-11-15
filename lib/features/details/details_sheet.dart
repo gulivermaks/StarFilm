@@ -716,6 +716,7 @@ class _MediaDetailsSheetState extends ConsumerState<MediaDetailsSheet> {
   }
 
   Future<void> _watchOnTv(String title, String originalTitle, int? year) async {
+    final s = ref.read(appControllerProvider).strings;
     try {
       await ref.read(appControllerProvider.notifier).launchOnTv(
             tmdbId: widget.tmdbId,
@@ -726,13 +727,13 @@ class _MediaDetailsSheetState extends ConsumerState<MediaDetailsSheet> {
           );
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Відправлено на StarTV')),
+          SnackBar(content: Text(s.t('startv_sent'))),
         );
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Помилка StarTV: $e')),
+          SnackBar(content: Text(s.t('startv_error', {'e': '$e'}))),
         );
       }
     }
