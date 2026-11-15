@@ -1,0 +1,43 @@
+# Signing keys & local secrets (NEVER commit)
+*.jks
+*.keystore
+*.p12
+*.pem
+*.key
+key.properties
+android/key.properties
+secrets.json
+*.env
+.env.*
+
+# Local Android / Flutter machine paths
+local.properties
+android/local.properties
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+
+# Build & tool caches
+/build/
+/android/.gradle/
+/android/captures/
+/android/app/debug/
+/android/app/profile/
+/android/app/release/
+/.dart_tool/
+/.work/
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# Coverage & logs
+/coverage/
+*.log
+
+# IDE & OS files
+.idea/
+*.iml
+.vscode/
+.DS_Store
+Thumbs.db
