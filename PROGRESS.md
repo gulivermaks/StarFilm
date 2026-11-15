@@ -166,11 +166,24 @@
   - В `android/app/src/main/kotlin/app/starfilm/android/MainActivity.kt` добавлена проверка `canRequestPackageInstalls()`: при отсутствии разрешения открываются настройки Android «Установка неизвестных приложений» для StarFilm, возвращается `permission_required`, а скачанный и проверенный APK сохраняется для повторного нажатия (`update_install_permission` в `lib/app/l10n.dart`, `lib/features/settings/settings_screen.dart`).
   - Проверки `v0.07`: `flutter analyze` — `No issues found!`, `flutter test` — `32/32`, собран `StarFilm.apk v0.07 (7)` (`60.56 MB`), установлено и проверено на Pixel XL (`HT6AD0200687`).
 
+- **Крупное функциональное обновление `v0.08` (`versionCode=8`)**:
+  - **Рейтинги Кинопоиска + IMDb по личному ключу КП** ([kinopoisk_client.dart](lib/features/ratings/kinopoisk_client.dart), [secret_store.dart](lib/core/security/secret_store.dart), [log_sanitizer.dart](lib/core/security/log_sanitizer.dart), [details_sheet.dart](lib/features/details/details_sheet.dart), [settings_screen.dart](lib/features/settings/settings_screen.dart), [onboarding_screen.dart](lib/features/onboarding/onboarding_screen.dart), [startv_client.dart](lib/features/startv/startv_client.dart)): проверка ключа на `kinopoiskapiunofficial.tech`, lookup по `imdbId` (`ratingKinopoisk` + `ratingImdb`) и фолбэк по названию/году, бейджи `КП {r}` / `IMDb {r}` в карточке тайтла, маскирование UUID-ключа в логах, перенос ключа Кинопоиска на `StarTV` (`/api/keys`).
+  - **Пакетный импорт оценок `CSV/TSV`** ([rating_csv_import.dart](lib/features/library/rating_csv_import.dart), [settings_screen.dart](lib/features/settings/settings_screen.dart), [app_state.dart](lib/app/app_state.dart)): парсинг CSV/TSV (`;`, `\t`, `,`) и формата `"Название — 8/10"` (до 100 строк) через диалог в Настройках (выбор файла или вставка текста) с автопоиском в TMDB.
+  - **Дополнительные мобильные плееры** ([mobile_players.dart](lib/features/players/mobile_players.dart), [MainActivity.kt](android/app/src/main/kotlin/app/starfilm/android/MainActivity.kt), [AndroidManifest.xml](android/app/src/main/AndroidManifest.xml)): добавлены `VLC`, `MX Player` (с фолбэком `.pro`), `Kodi`, `TorrServe`.
+  - **Голосовой ввод** ([device_bridge.dart](lib/core/platform/device_bridge.dart), [MainActivity.kt](android/app/src/main/kotlin/app/starfilm/android/MainActivity.kt), [discovery_tab.dart](lib/features/discovery/discovery_tab.dart), [search_tab.dart](lib/features/search/search_tab.dart)): системное распознавание речи Android `RecognizerIntent.ACTION_RECOGNIZE_SPEECH` по кнопке микрофона на вкладках «Підбір» и «Пошук».
+  - **Парный Match-свайп на одном экране** ([match_swipe_sheet.dart](lib/features/discovery/match_swipe_sheet.dart), [discovery_tab.dart](lib/features/discovery/discovery_tab.dart)): пошаговый свайп двоих игроков с анимацией угла/глубины карточек, отменой шага, экраном передачи устройства и списком взаимных совпадений. (Расширенный «Спільний вечір» между локальными профилями окончательно исключён по решению владельца в [StarFilm_SPECIFICATION_v2.1_FREE.md](StarFilm_SPECIFICATION_v2.1_FREE.md).)
+  - **Уведомления о цифровых релизах фильмов** ([digital_release_service.dart](lib/features/releases/digital_release_service.dart), [tmdb_client.dart](lib/features/search/tmdb_client.dart), [MainActivity.kt](android/app/src/main/kotlin/app/starfilm/android/MainActivity.kt), [main.dart](lib/main.dart), [details_sheet.dart](lib/features/details/details_sheet.dart)): строго для **фильмов** из списка «Хочу посмотреть» (`type == 4`, не сериалы/эпизоды), системный канал уведомлений `starfilm_releases`, `SnackBar`-баннер при старте и бейдж `Цифра: DD.MM.YYYY` в карточке.
+  - **Проверки `v0.08`**:
+    - `flutter analyze` — `No issues found!`;
+    - `flutter test` — `40/40` (`All tests passed!`, включая [v08_enhancements_test.dart](test/v08_enhancements_test.dart));
+    - `tools/build_apk.ps1` — собран подписанный `StarFilm.apk` `v0.08` (`versionCode=8`, `61.13 MB`);
+    - Живая проверка на физическом **Pixel XL (`HT6AD0200687`)**: подтверждены кнопка голосового ввода и `Match вдвоём` на «Підбір», открыта карточная колода `Парный Match-свайп (1/12)`, в «Настройки» видны поле `Kinopoisk API key`, плееры (`VLC`, `MX Player`, `Kodi`, `TorrServe`), переключатель и ручная проверка цифровых релизов фильмов, `Пакетный импорт оценок (CSV/TSV)`, строка статуса `Диагностика` (`КП: нет` + `Журнал пуст`) и кнопка `Проверить обновления v0.08 (8)`.
+
 ## 5. На каком этапе остановились и что дальше
 
-- **Текущий этап**: Релиз **`v0.05` (`versionCode=5`)** опубликован на GitHub; локальная сборка **`v0.07` (`versionCode=7`)** собрана, проверена автотестами (`32/32`) и на физическом Pixel XL.
+- **Текущий этап**: Релиз **`v0.08` (`versionCode=8`)** подготовлен к публикации на GitHub, проверен автотестами (`40/40`) и на физическом Pixel XL.
 - **Следующий шаг**:
-  1. По явной команде владельца: публикация `v0.07` на GitHub (чтобы S26 Ultra после ручной установки один раз получил полноценный OTA-апдейт на `v0.08+`), доработка серверной стороны `StarTV` на приставке или бэклог `v1.1+`.
+  1. Проверка OTA-обновления на основном телефоне (Samsung S26 Ultra) и дальнейшая доработка по запросам владельца после полевых тестов.
 
 ---
 

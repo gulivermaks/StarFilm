@@ -14,49 +14,68 @@ class OnboardingScreen extends ConsumerStatefulWidget {
   ConsumerState<OnboardingScreen> createState() => _OnboardingScreenState();
 }
 
+enum _OnboardingKeyKind { tmdb, gemini, kinopoisk }
+
 class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   int _step = 0;
   final _tmdbController = TextEditingController();
   final _geminiController = TextEditingController();
+  final _kpController = TextEditingController();
   bool? _tmdbOk;
   bool? _geminiOk;
+  bool? _kpOk;
   String? _tmdbMessage;
   String? _geminiMessage;
+  String? _kpMessage;
   bool _verifyingTmdb = false;
   bool _verifyingGemini = false;
+  bool _verifyingKp = false;
 
   @override
   void dispose() {
     _tmdbController.dispose();
     _geminiController.dispose();
+    _kpController.dispose();
     super.dispose();
   }
 
-  Future<void> _verifySingleKey({required bool isTmdb}) async {
+  Future<void> _verifySingleKey(_OnboardingKeyKind kind) async {
     final s = ref.read(appControllerProvider).strings;
-    final controller = isTmdb ? _tmdbController : _geminiController;
+    final controller = switch (kind) {
+      _OnboardingKeyKind.tmdb => _tmdbController,
+      _OnboardingKeyKind.gemini => _geminiController,
+      _OnboardingKeyKind.kinopoisk => _kpController,
+    };
     final val = controller.text.trim();
 
     if (val.isEmpty) {
       setState(() {
-        if (isTmdb) {
-          _tmdbOk = false;
-          _tmdbMessage = s.t('key_empty');
-        } else {
-          _geminiOk = false;
-          _geminiMessage = s.t('key_empty');
+        switch (kind) {
+          case _OnboardingKeyKind.tmdb:
+            _tmdbOk = false;
+            _tmdbMessage = s.t('key_empty');
+          case _OnboardingKeyKind.gemini:
+            _geminiOk = false;
+            _geminiMessage = s.t('key_empty');
+          case _OnboardingKeyKind.kinopoisk:
+            _kpOk = false;
+            _kpMessage = s.t('key_empty');
         }
       });
       return;
     }
 
     setState(() {
-      if (isTmdb) {
-        _verifyingTmdb = true;
-        _tmdbMessage = null;
-      } else {
-        _verifyingGemini = true;
-        _geminiMessage = null;
+      switch (kind) {
+        case _OnboardingKeyKind.tmdb:
+          _verifyingTmdb = true;
+          _tmdbMessage = null;
+        case _OnboardingKeyKind.gemini:
+          _verifyingGemini = true;
+          _geminiMessage = null;
+        case _OnboardingKeyKind.kinopoisk:
+          _verifyingKp = true;
+          _kpMessage = null;
       }
     });
 
@@ -64,16 +83,19 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
     String message;
     try {
       final services = ref.read(appServicesProvider);
-      ok = isTmdb
-          ? await services.tmdb.verifyKey(val)
-          : await services.gemini.verifyKey(
-              val,
-              model: ref.read(appControllerProvider).geminiModel,
-            );
+      ok = switch (kind) {
+        _OnboardingKeyKind.tmdb => await services.tmdb.verifyKey(val),
+        _OnboardingKeyKind.gemini => await services.gemini.verifyKey(
+            val,
+            model: ref.read(appControllerProvider).geminiModel,
+          ),
+        _OnboardingKeyKind.kinopoisk => await services.kinopoisk.verifyKey(val),
+      };
       if (ok) {
         await ref.read(appControllerProvider.notifier).setApiKeys(
-              tmdbKey: isTmdb ? val : null,
-              geminiKey: isTmdb ? null : val,
+              tmdbKey: kind == _OnboardingKeyKind.tmdb ? val : null,
+              geminiKey: kind == _OnboardingKeyKind.gemini ? val : null,
+              kinopoiskKey: kind == _OnboardingKeyKind.kinopoisk ? val : null,
             );
         message = s.t('key_verified_ok');
       } else {
@@ -86,14 +108,19 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
 
     if (!mounted) return;
     setState(() {
-      if (isTmdb) {
-        _verifyingTmdb = false;
-        _tmdbOk = ok;
-        _tmdbMessage = message;
-      } else {
-        _verifyingGemini = false;
-        _geminiOk = ok;
-        _geminiMessage = message;
+      switch (kind) {
+        case _OnboardingKeyKind.tmdb:
+          _verifyingTmdb = false;
+          _tmdbOk = ok;
+          _tmdbMessage = message;
+        case _OnboardingKeyKind.gemini:
+          _verifyingGemini = false;
+          _geminiOk = ok;
+          _geminiMessage = message;
+        case _OnboardingKeyKind.kinopoisk:
+          _verifyingKp = false;
+          _kpOk = ok;
+          _kpMessage = message;
       }
     });
   }
@@ -149,6 +176,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                           await ref.read(appControllerProvider.notifier).setApiKeys(
                                 tmdbKey: _tmdbController.text.trim(),
                                 geminiKey: _geminiController.text.trim(),
+                                kinopoiskKey: _kpController.text.trim(),
                               );
                         }
                         if (_step < 4) {
@@ -224,7 +252,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
               ok: _tmdbOk,
               statusMessage: _tmdbMessage,
               verifyLabel: s.t('verify'),
-              onVerify: () => _verifySingleKey(isTmdb: true),
+              onVerify: () => _verifySingleKey(_OnboardingKeyKind.tmdb),
               onChanged: () {
                 if (_tmdbOk != null || _tmdbMessage != null) {
                   setState(() {
@@ -245,12 +273,33 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
               ok: _geminiOk,
               statusMessage: _geminiMessage,
               verifyLabel: s.t('verify'),
-              onVerify: () => _verifySingleKey(isTmdb: false),
+              onVerify: () => _verifySingleKey(_OnboardingKeyKind.gemini),
               onChanged: () {
                 if (_geminiOk != null || _geminiMessage != null) {
                   setState(() {
                     _geminiOk = null;
                     _geminiMessage = null;
+                  });
+                }
+              },
+            ),
+            const SizedBox(height: 14),
+            _buildKeyFieldSection(
+              keyFieldId: 'onboarding_kp',
+              controller: _kpController,
+              label: '${s.t('kp_key')} (${s.t('optional')})',
+              linkLabel: s.t('onboarding_get_kp'),
+              linkUri: Uri.https('kinopoiskapiunofficial.tech', '/'),
+              verifying: _verifyingKp,
+              ok: _kpOk,
+              statusMessage: _kpMessage,
+              verifyLabel: s.t('verify'),
+              onVerify: () => _verifySingleKey(_OnboardingKeyKind.kinopoisk),
+              onChanged: () {
+                if (_kpOk != null || _kpMessage != null) {
+                  setState(() {
+                    _kpOk = null;
+                    _kpMessage = null;
                   });
                 }
               },

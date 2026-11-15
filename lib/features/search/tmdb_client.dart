@@ -324,6 +324,53 @@ class TmdbClient {
     );
   }
 
+  /// Queries TMDB `/3/movie/{id}/release_dates` for a movie's digital release
+  /// date (`type == 4`). Strictly for movies only; series have no movie digital release.
+  Future<DateTime?> fetchMovieDigitalReleaseDate({
+    required String apiKey,
+    required int tmdbId,
+  }) async {
+    final key = _normalizeToken(apiKey);
+    if (key.isEmpty || tmdbId <= 0) return null;
+
+    final res = await _get(key, '/3/movie/$tmdbId/release_dates');
+    if (!res.isOk) return null;
+    final decoded = jsonDecode(res.body);
+    if (decoded is! Map<String, dynamic>) return null;
+
+    final results = decoded['results'];
+    if (results is! List) return null;
+
+    const priorityRegions = ['UA', 'US', 'GB', 'RU'];
+    DateTime? preferredDate;
+    int preferredRank = 999;
+    DateTime? earliestAny;
+
+    for (final countryEntry in results.whereType<Map<String, dynamic>>()) {
+      final iso = (countryEntry['iso_3166_1'] ?? '').toString().toUpperCase();
+      final releases = countryEntry['release_dates'];
+      if (releases is! List) continue;
+      for (final rel in releases.whereType<Map<String, dynamic>>()) {
+        final type = rel['type'] is num ? (rel['type'] as num).toInt() : 0;
+        if (type != 4) continue; // 4 = Digital
+        final rawDate = (rel['release_date'] ?? '').toString().trim();
+        final parsed = DateTime.tryParse(rawDate);
+        if (parsed == null) continue;
+
+        final utcDate = DateTime.utc(parsed.year, parsed.month, parsed.day);
+        if (earliestAny == null || utcDate.isBefore(earliestAny)) {
+          earliestAny = utcDate;
+        }
+        final rank = priorityRegions.indexOf(iso);
+        if (rank >= 0 && rank < preferredRank) {
+          preferredRank = rank;
+          preferredDate = utcDate;
+        }
+      }
+    }
+    return preferredDate ?? earliestAny;
+  }
+
   Future<List<TmdbSearchCandidate>> discoverFallback({
     required String apiKey,
     required MediaType mediaType,

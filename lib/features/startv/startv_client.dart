@@ -159,13 +159,13 @@ class StarTvClient {
   Future<void> transferApiKey({
     required StarTvDevice device,
     required String bearerToken,
-    required String provider, // 'gemini' or 'tmdb'
+    required String provider, // 'gemini', 'tmdb', or 'kinopoisk'
     required String apiKey,
   }) async {
     if (!device.canTransferKeys) {
       throw StarTvException('Key transfer is blocked in Guest TV mode');
     }
-    if (provider != 'gemini' && provider != 'tmdb') {
+    if (provider != 'gemini' && provider != 'tmdb' && provider != 'kinopoisk') {
       throw ArgumentError.value(provider, 'provider');
     }
     final uri = device.baseUri.replace(path: '/api/keys');

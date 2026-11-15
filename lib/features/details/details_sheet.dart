@@ -9,6 +9,7 @@ import '../../core/models/library_entry.dart';
 import '../../core/models/media_key.dart';
 import '../library/backup_codec.dart';
 import '../players/mobile_players.dart';
+import '../ratings/kinopoisk_client.dart';
 import '../search/tmdb_client.dart';
 
 class MediaDetailsSheet extends ConsumerStatefulWidget {
@@ -81,6 +82,8 @@ class MediaDetailsSheet extends ConsumerStatefulWidget {
 
 class _MediaDetailsSheetState extends ConsumerState<MediaDetailsSheet> {
   MediaDetails? _details;
+  ExternalRatings? _extRatings;
+  DateTime? _digitalReleaseDate;
   bool _loading = true;
 
   @override
@@ -92,22 +95,47 @@ class _MediaDetailsSheetState extends ConsumerState<MediaDetailsSheet> {
   Future<void> _loadDetails() async {
     final appState = ref.read(appControllerProvider);
     final key = appState.tmdbKey;
+    final services = ref.read(appServicesProvider);
     if (key.isEmpty) {
       if (mounted) setState(() => _loading = false);
       return;
     }
     try {
-      final d = await ref.read(appServicesProvider).tmdb.fetchDetails(
-            apiKey: key,
-            mediaType: widget.mediaType,
-            tmdbId: widget.tmdbId,
-            contentLanguage: appState.activeProfile.preferences.contentLanguage,
-          );
+      final d = await services.tmdb.fetchDetails(
+        apiKey: key,
+        mediaType: widget.mediaType,
+        tmdbId: widget.tmdbId,
+        contentLanguage: appState.activeProfile.preferences.contentLanguage,
+      );
       if (mounted) {
         setState(() {
           _details = d;
           _loading = false;
         });
+      }
+
+      if (appState.kinopoiskKey.trim().isNotEmpty) {
+        final kp = await services.kinopoisk.fetchRatings(
+          apiKey: appState.kinopoiskKey,
+          imdbId: d?.imdbId,
+          title: (d?.originalTitle.isNotEmpty == true)
+              ? d!.originalTitle
+              : (d?.title ?? widget.initialTitle),
+          year: d?.year ?? widget.initialYear,
+        );
+        if (mounted && kp != null && kp.hasAny) {
+          setState(() => _extRatings = kp);
+        }
+      }
+
+      if (widget.mediaType == MediaType.movie) {
+        final relDate = await services.tmdb.fetchMovieDigitalReleaseDate(
+          apiKey: key,
+          tmdbId: widget.tmdbId,
+        );
+        if (mounted && relDate != null) {
+          setState(() => _digitalReleaseDate = relDate);
+        }
       }
     } catch (_) {
       if (mounted) setState(() => _loading = false);
@@ -192,8 +220,28 @@ class _MediaDetailsSheetState extends ConsumerState<MediaDetailsSheet> {
                         if (year != null) _chip('$year'),
                         if (rating != null && rating > 0)
                           _chip('TMDB ${rating.toStringAsFixed(1)}'),
+                        if (_extRatings?.kinopoiskRating != null)
+                          _chip(
+                            s.t('kp_rating', {
+                              'r': _extRatings!.kinopoiskRating!.toStringAsFixed(1),
+                            }),
+                          ),
+                        if (_extRatings?.imdbRating != null)
+                          _chip(
+                            s.t('imdb_rating', {
+                              'r': _extRatings!.imdbRating!.toStringAsFixed(1),
+                            }),
+                          ),
                         if (_details?.runtimeMinutes != null)
                           _chip(s.t('runtime_min', {'n': _details!.runtimeMinutes})),
+                        if (widget.mediaType == MediaType.movie &&
+                            _digitalReleaseDate != null)
+                          _chip(
+                            s.t('digital_release_badge', {
+                              'date':
+                                  '${_digitalReleaseDate!.day.toString().padLeft(2, '0')}.${_digitalReleaseDate!.month.toString().padLeft(2, '0')}.${_digitalReleaseDate!.year}',
+                            }),
+                          ),
                         if (widget.mediaType == MediaType.tv &&
                             _details?.numberOfSeasons != null)
                           _chip(s.t('seasons_count', {'n': _details!.numberOfSeasons})),

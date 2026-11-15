@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:math';
 
+import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../../features/startv/startv_models.dart';
@@ -18,6 +19,7 @@ class SecretStore {
 
   static const String _tmdbKey = 'starfilm.tmdb_api_key';
   static const String _geminiKey = 'starfilm.gemini_api_key';
+  static const String _kinopoiskKey = 'starfilm.kinopoisk_api_key';
   static const String _deviceIdKey = 'starfilm.device_id';
   static const String _starTvDevicesKey = 'starfilm.startv_devices';
   static const String _starTvTokenPrefix = 'starfilm.startv_token.';
@@ -29,6 +31,22 @@ class SecretStore {
   Future<String> getGeminiKey() async => (await _storage.read(key: _geminiKey)) ?? '';
   Future<void> setGeminiKey(String value) =>
       _storage.write(key: _geminiKey, value: value.trim());
+
+  Future<String> getKinopoiskKey() async {
+    try {
+      return (await _storage.read(key: _kinopoiskKey)) ?? '';
+    } on MissingPluginException {
+      return '';
+    }
+  }
+
+  Future<void> setKinopoiskKey(String value) async {
+    try {
+      await _storage.write(key: _kinopoiskKey, value: value.trim());
+    } on MissingPluginException {
+      // Allow legacy test SecretStore fakes to omit Kinopoisk overrides.
+    }
+  }
 
   Future<String> getOrCreateDeviceId() async {
     final existing = await _storage.read(key: _deviceIdKey);

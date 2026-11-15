@@ -8,6 +8,10 @@ enum MobilePlayerId {
   lampa('lampa', 'Lampa', 'top.rootu.lampa'),
   num('num', 'NUM', 'com.num.client'),
   hdrezka('hdrezka', 'HDRezka', 'to.pda.falcofemoralis.hdrezkaapp'),
+  vlc('vlc', 'VLC', 'org.videolan.vlc'),
+  mxPlayer('mx_player', 'MX Player', 'com.mxtech.videoplayer.ad'),
+  kodi('kodi', 'Kodi', 'org.xbmc.kodi'),
+  torrServe('torrserve', 'TorrServe', 'ru.yourok.torrserve'),
   webSearch('web_search', 'Browser Search', '');
 
   const MobilePlayerId(this.id, this.label, this.androidPackage);

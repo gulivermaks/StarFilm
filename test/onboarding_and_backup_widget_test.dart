@@ -28,6 +28,7 @@ import 'package:starfilm/main.dart';
 class _TestSecretStore extends SecretStore {
   String _tmdb = '';
   String _gemini = '';
+  String _kp = '';
 
   @override
   Future<String> getTmdbKey() async => _tmdb;
@@ -40,6 +41,12 @@ class _TestSecretStore extends SecretStore {
 
   @override
   Future<String> setGeminiKey(String value) async => _gemini = value.trim();
+
+  @override
+  Future<String> getKinopoiskKey() async => _kp;
+
+  @override
+  Future<void> setKinopoiskKey(String value) async => _kp = value.trim();
 
   @override
   Future<String> getOrCreateDeviceId() async => 'test-device-2';

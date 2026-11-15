@@ -4,9 +4,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../app/app_state.dart';
 import '../../app/theme.dart';
 import '../../core/models/media_key.dart';
+import '../../core/platform/device_bridge.dart';
 import '../details/details_sheet.dart';
 import '../search/tmdb_client.dart';
 import 'discovery_models.dart';
+import 'match_swipe_sheet.dart';
 
 class DiscoveryTab extends ConsumerStatefulWidget {
   const DiscoveryTab({super.key});
@@ -37,6 +39,28 @@ class _DiscoveryTabState extends ConsumerState<DiscoveryTab> {
             different: different,
           ),
         );
+  }
+
+  Future<void> _voicePrompt() async {
+    final state = ref.read(appControllerProvider);
+    final s = state.strings;
+    final langTag =
+        DeviceBridge.toSpeechLocaleTag(state.activeProfile.preferences.contentLanguage);
+    final spoken = await DeviceBridge.startVoiceInput(
+      languageTag: langTag,
+      prompt: s.t('voice_input_tooltip'),
+    );
+    if (!mounted) return;
+    if (spoken == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(s.t('voice_unavailable'))),
+      );
+      return;
+    }
+    if (spoken.isNotEmpty) {
+      _promptController.text = spoken;
+      await _runPick();
+    }
   }
 
   @override
@@ -75,9 +99,19 @@ class _DiscoveryTabState extends ConsumerState<DiscoveryTab> {
           onSubmitted: (_) => _runPick(),
           decoration: InputDecoration(
             hintText: s.t('pick_prompt_hint'),
-            suffixIcon: IconButton(
-              icon: const Icon(Icons.auto_awesome, color: StarFilmColors.limeFocus),
-              onPressed: state.isPicking ? null : () => _runPick(),
+            suffixIcon: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  tooltip: s.t('voice_input_tooltip'),
+                  icon: const Icon(Icons.mic_none),
+                  onPressed: state.isPicking ? null : _voicePrompt,
+                ),
+                IconButton(
+                  icon: const Icon(Icons.auto_awesome, color: StarFilmColors.limeFocus),
+                  onPressed: state.isPicking ? null : () => _runPick(),
+                ),
+              ],
             ),
           ),
         ),
@@ -135,11 +169,23 @@ class _DiscoveryTabState extends ConsumerState<DiscoveryTab> {
               ),
             ),
             if (state.recommendations.isNotEmpty) ...[
-              const SizedBox(width: 10),
+              const SizedBox(width: 8),
               OutlinedButton.icon(
                 onPressed: state.isPicking ? null : () => _runPick(different: true),
                 icon: const Icon(Icons.refresh),
                 label: Text(s.t('pick_more')),
+              ),
+              const SizedBox(width: 8),
+              OutlinedButton.icon(
+                onPressed: state.isPicking
+                    ? null
+                    : () => MatchSwipeSheet.show(
+                          context,
+                          cards: state.recommendations,
+                          strings: s,
+                        ),
+                icon: const Icon(Icons.swipe),
+                label: Text(s.t('match_swipe_btn')),
               ),
             ],
           ],

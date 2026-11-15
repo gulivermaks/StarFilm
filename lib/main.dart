@@ -62,6 +62,17 @@ class _HomeShellState extends ConsumerState<HomeShell> {
     final s = state.strings;
     final activeTv = state.activeTv;
 
+    ref.listen<AppControllerState>(appControllerProvider, (prev, next) {
+      if ((prev?.recentDigitalReleases.isEmpty ?? true) &&
+          next.recentDigitalReleases.isNotEmpty) {
+        final titles =
+            next.recentDigitalReleases.map((m) => m.entry.title).take(3).join(', ');
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(s.t('release_found_banner', {'titles': titles}))),
+        );
+      }
+    });
+
     return Scaffold(
       appBar: AppBar(
         titleSpacing: 16,

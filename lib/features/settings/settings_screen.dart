@@ -16,9 +16,12 @@ import '../../core/models/profile.dart';
 import '../cloud_sync/cloud_sync_models.dart';
 import '../discovery/gemini_client.dart';
 import '../library/backup_codec.dart';
+import '../library/rating_csv_import.dart';
 import '../players/mobile_players.dart';
 import '../startv/startv_pairing_dialog.dart';
 import 'ota_updater.dart';
+
+enum _SettingsKeyKind { tmdb, gemini, kinopoisk }
 
 class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
@@ -272,6 +275,7 @@ class SettingsScreen extends ConsumerStatefulWidget {
 class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   String _versionLabel = '';
   bool _checkingUpdates = false;
+  bool _checkingReleases = false;
   bool _syncingTv = false;
 
   @override
@@ -323,14 +327,14 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             ),
           const Divider(height: 32),
 
-          _sectionHeader('${s.t('tmdb_key')} / ${s.t('gemini_key')}'),
+          _sectionHeader('${s.t('tmdb_key')} / ${s.t('gemini_key')} / ${s.t('kp_key')}'),
           ListTile(
             title: Text(s.t('tmdb_key')),
             subtitle: Text(
               state.tmdbKey.isEmpty ? s.t('key_missing') : s.t('key_saved_local'),
             ),
             trailing: const Icon(Icons.edit),
-            onTap: () => _editKeyDialog(isTmdb: true, current: state.tmdbKey),
+            onTap: () => _editKeyDialog(kind: _SettingsKeyKind.tmdb, current: state.tmdbKey),
           ),
           ListTile(
             title: Text(s.t('gemini_key')),
@@ -338,7 +342,16 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               state.geminiKey.isEmpty ? s.t('key_missing') : s.t('key_saved_local'),
             ),
             trailing: const Icon(Icons.edit),
-            onTap: () => _editKeyDialog(isTmdb: false, current: state.geminiKey),
+            onTap: () => _editKeyDialog(kind: _SettingsKeyKind.gemini, current: state.geminiKey),
+          ),
+          ListTile(
+            title: Text(s.t('kp_key')),
+            subtitle: Text(
+              state.kinopoiskKey.isEmpty ? s.t('key_missing') : s.t('key_saved_local'),
+            ),
+            trailing: const Icon(Icons.edit),
+            onTap: () =>
+                _editKeyDialog(kind: _SettingsKeyKind.kinopoisk, current: state.kinopoiskKey),
           ),
           ListTile(
             title: Text(s.t('gemini_model')),
@@ -505,6 +518,28 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           ),
           const Divider(height: 32),
 
+          _sectionHeader(s.t('release_alerts_toggle')),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: Text(s.t('release_alerts_toggle')),
+            subtitle: Text(s.t('release_alerts_desc'), style: const TextStyle(fontSize: 12)),
+            value: state.releaseNotificationsEnabled,
+            onChanged: (v) =>
+                ref.read(appControllerProvider.notifier).setReleaseNotificationsEnabled(v),
+          ),
+          OutlinedButton.icon(
+            onPressed: _checkingReleases ? null : _checkReleasesNow,
+            icon: _checkingReleases
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.notifications_active_outlined),
+            label: Text(s.t('release_check_now')),
+          ),
+          const Divider(height: 32),
+
           _sectionHeader('${s.t('backup_export')} / ${s.t('diagnostics')}'),
           OutlinedButton.icon(
             onPressed: _exportBackup,
@@ -516,6 +551,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             onPressed: _importBackup,
             icon: const Icon(Icons.download_for_offline_outlined),
             label: Text(s.t('backup_import')),
+          ),
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+            onPressed: _importCsvRatings,
+            icon: const Icon(Icons.table_rows_outlined),
+            label: Text(s.t('csv_import_btn')),
           ),
           const SizedBox(height: 8),
           OutlinedButton.icon(
@@ -569,19 +610,33 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     }
   }
 
-  Future<void> _editKeyDialog({required bool isTmdb, required String current}) async {
+  Future<void> _editKeyDialog({
+    required _SettingsKeyKind kind,
+    required String current,
+  }) async {
     final s = ref.read(appControllerProvider).strings;
     final ctrl = TextEditingController(text: current);
     bool verifying = false;
     bool? ok;
     String? verifyError;
 
+    final title = switch (kind) {
+      _SettingsKeyKind.tmdb => s.t('tmdb_key'),
+      _SettingsKeyKind.gemini => s.t('gemini_key'),
+      _SettingsKeyKind.kinopoisk => s.t('kp_key'),
+    };
+    final hint = switch (kind) {
+      _SettingsKeyKind.tmdb => s.t('tmdb_key_hint'),
+      _SettingsKeyKind.gemini => 'AIza...',
+      _SettingsKeyKind.kinopoisk => 'UUID / X-API-KEY',
+    };
+
     final next = await showDialog<String>(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setModalState) => AlertDialog(
           backgroundColor: StarFilmColors.surface,
-          title: Text(isTmdb ? s.t('tmdb_key') : s.t('gemini_key')),
+          title: Text(title),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -590,7 +645,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 controller: ctrl,
                 autofocus: true,
                 decoration: InputDecoration(
-                  hintText: isTmdb ? s.t('tmdb_key_hint') : 'AIza...',
+                  hintText: hint,
                   suffixIcon: ok == null
                       ? null
                       : Icon(
@@ -634,12 +689,15 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                           });
                           return;
                         }
-                        final valid = isTmdb
-                            ? await services.tmdb.verifyKey(val)
-                            : await services.gemini.verifyKey(
-                                val,
-                                model: ref.read(appControllerProvider).geminiModel,
-                              );
+                        final valid = switch (kind) {
+                          _SettingsKeyKind.tmdb => await services.tmdb.verifyKey(val),
+                          _SettingsKeyKind.gemini => await services.gemini.verifyKey(
+                              val,
+                              model: ref.read(appControllerProvider).geminiModel,
+                            ),
+                          _SettingsKeyKind.kinopoisk =>
+                            await services.kinopoisk.verifyKey(val),
+                        };
                         setModalState(() {
                           verifying = false;
                           ok = valid;
@@ -666,8 +724,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     );
     if (next != null) {
       await ref.read(appControllerProvider.notifier).setApiKeys(
-            tmdbKey: isTmdb ? next : null,
-            geminiKey: isTmdb ? null : next,
+            tmdbKey: kind == _SettingsKeyKind.tmdb ? next : null,
+            geminiKey: kind == _SettingsKeyKind.gemini ? next : null,
+            kinopoiskKey: kind == _SettingsKeyKind.kinopoisk ? next : null,
           );
     }
   }
@@ -822,6 +881,174 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     }
   }
 
+  Future<void> _checkReleasesNow() async {
+    final s = ref.read(appControllerProvider).strings;
+    setState(() => _checkingReleases = true);
+    try {
+      final matches = await ref
+          .read(appControllerProvider.notifier)
+          .checkMovieDigitalReleases(manual: true);
+      if (!mounted) return;
+      final msg = matches.isEmpty
+          ? s.t('release_none_found')
+          : s.t('release_found_banner', {
+              'titles': matches.take(3).map((m) => m.entry.title).join(', '),
+            });
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+    } finally {
+      if (mounted) setState(() => _checkingReleases = false);
+    }
+  }
+
+  Future<void> _importCsvRatings() async {
+    final s = ref.read(appControllerProvider).strings;
+    final textCtrl = TextEditingController();
+    bool importing = false;
+    int doneCount = 0;
+    int totalCount = 0;
+    RatingImportBatchResult? result;
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: !importing,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setModalState) => AlertDialog(
+          backgroundColor: StarFilmColors.surface,
+          title: Text(s.t('csv_import_btn')),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    s.t('csv_import_hint'),
+                    style: const TextStyle(color: StarFilmColors.textSecondary, fontSize: 12),
+                  ),
+                  const SizedBox(height: 10),
+                  OutlinedButton.icon(
+                    onPressed: importing
+                        ? null
+                        : () async {
+                            final picked = await FilePicker.platform.pickFiles(
+                              type: FileType.custom,
+                              allowedExtensions: const ['csv', 'tsv', 'txt'],
+                            );
+                            final path = picked?.files.single.path;
+                            if (path == null) return;
+                            final content = await File(path).readAsString();
+                            textCtrl.text = content;
+                            setModalState(() {});
+                          },
+                    icon: const Icon(Icons.folder_open),
+                    label: Text(s.t('csv_pick_file')),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: textCtrl,
+                    minLines: 4,
+                    maxLines: 8,
+                    enabled: !importing,
+                    decoration: InputDecoration(
+                      hintText: s.t('csv_paste_label'),
+                    ),
+                  ),
+                  if (importing) ...[
+                    const SizedBox(height: 12),
+                    LinearProgressIndicator(
+                      value: totalCount > 0 ? doneCount / totalCount : null,
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      s.t('csv_import_progress', {'done': doneCount, 'total': totalCount}),
+                      style: const TextStyle(fontSize: 12, color: StarFilmColors.textSecondary),
+                    ),
+                  ],
+                  if (result != null) ...[
+                    const SizedBox(height: 12),
+                    Text(
+                      s.t('csv_import_done', {
+                        'n': result!.resolved.length,
+                        'skip': result!.skippedTitles.length,
+                      }),
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: result!.resolved.isNotEmpty
+                            ? StarFilmColors.success
+                            : StarFilmColors.textSecondary,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: importing ? null : () => Navigator.pop(ctx),
+              child: Text(s.t('close')),
+            ),
+            FilledButton(
+              onPressed: importing
+                  ? null
+                  : () async {
+                      final parsed = RatingCsvParser.parse(textCtrl.text);
+                      if (parsed.isEmpty) {
+                        setModalState(() {
+                          result = const RatingImportBatchResult(
+                            resolved: [],
+                            skippedTitles: [],
+                          );
+                        });
+                        return;
+                      }
+                      setModalState(() {
+                        importing = true;
+                        doneCount = 0;
+                        totalCount = parsed.length;
+                        result = null;
+                      });
+                      try {
+                        final batch = await ref
+                            .read(appControllerProvider.notifier)
+                            .importCsvRatings(
+                              textCtrl.text,
+                              onProgress: (d, t) {
+                                if (ctx.mounted) {
+                                  setModalState(() {
+                                    doneCount = d;
+                                    totalCount = t;
+                                  });
+                                }
+                              },
+                            );
+                        if (ctx.mounted) {
+                          setModalState(() {
+                            importing = false;
+                            result = batch;
+                          });
+                        }
+                      } catch (e) {
+                        if (ctx.mounted) {
+                          setModalState(() => importing = false);
+                        }
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text('$e')),
+                          );
+                        }
+                      }
+                    },
+              child: Text(s.t('csv_import_run')),
+            ),
+          ],
+        ),
+      ),
+    );
+    textCtrl.dispose();
+  }
+
   void _showDiagnostics(BuildContext context) {
     final state = ref.read(appControllerProvider);
     final s = state.strings;
@@ -830,6 +1057,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     final statusLine = s.t('diag_status_line', {
       'tmdb': state.tmdbKey.trim().isNotEmpty ? ok : no,
       'gemini': state.geminiKey.trim().isNotEmpty ? ok : no,
+      'kp': state.kinopoiskKey.trim().isNotEmpty ? ok : no,
       'cloud': state.cloudUid.isNotEmpty ? ok : no,
       'profiles': state.profiles.length,
       'entries': state.entries.length,

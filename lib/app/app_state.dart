@@ -10,6 +10,7 @@ import '../core/models/library_entry.dart';
 import '../core/models/media_key.dart';
 import '../core/models/profile.dart';
 import '../core/network/starfilm_http_client.dart';
+import '../core/platform/device_bridge.dart';
 import '../core/security/log_sanitizer.dart';
 import '../core/security/secret_store.dart';
 import '../features/cloud_sync/cloud_sync_models.dart';
@@ -19,7 +20,10 @@ import '../features/discovery/discovery_service.dart';
 import '../features/discovery/gemini_client.dart';
 import '../features/library/backup_codec.dart';
 import '../features/library/library_repository.dart';
+import '../features/library/rating_csv_import.dart';
 import '../features/players/mobile_players.dart';
+import '../features/ratings/kinopoisk_client.dart';
+import '../features/releases/digital_release_service.dart';
 import '../features/search/tmdb_client.dart';
 import '../features/settings/ota_updater.dart';
 import '../features/startv/startv_client.dart';
@@ -38,6 +42,7 @@ class AppControllerState {
     this.collections = const [],
     this.tmdbKey = '',
     this.geminiKey = '',
+    this.kinopoiskKey = '',
     this.geminiModel = 'gemini-3.5-flash-lite',
     this.preferredPlayer = MobilePlayerId.stremio,
     this.pairedDevices = const [],
@@ -54,6 +59,8 @@ class AppControllerState {
     this.lastDiscoveryError = '',
     this.recentShownIds = const {},
     this.recentShownLabels = const [],
+    this.releaseNotificationsEnabled = true,
+    this.recentDigitalReleases = const [],
   });
 
   final bool initialized;
@@ -66,6 +73,7 @@ class AppControllerState {
   final List<UserCollection> collections;
   final String tmdbKey;
   final String geminiKey;
+  final String kinopoiskKey;
   final String geminiModel;
   final MobilePlayerId preferredPlayer;
   final List<StarTvDevice> pairedDevices;
@@ -82,6 +90,8 @@ class AppControllerState {
   final String lastDiscoveryError;
   final Set<String> recentShownIds;
   final List<String> recentShownLabels;
+  final bool releaseNotificationsEnabled;
+  final List<DigitalReleaseMatch> recentDigitalReleases;
 
   UserProfile get activeProfile {
     for (final p in profiles) {
@@ -113,6 +123,7 @@ class AppControllerState {
     List<UserCollection>? collections,
     String? tmdbKey,
     String? geminiKey,
+    String? kinopoiskKey,
     String? geminiModel,
     MobilePlayerId? preferredPlayer,
     List<StarTvDevice>? pairedDevices,
@@ -129,6 +140,8 @@ class AppControllerState {
     String? lastDiscoveryError,
     Set<String>? recentShownIds,
     List<String>? recentShownLabels,
+    bool? releaseNotificationsEnabled,
+    List<DigitalReleaseMatch>? recentDigitalReleases,
   }) {
     return AppControllerState(
       initialized: initialized ?? this.initialized,
@@ -141,6 +154,7 @@ class AppControllerState {
       collections: collections ?? this.collections,
       tmdbKey: tmdbKey ?? this.tmdbKey,
       geminiKey: geminiKey ?? this.geminiKey,
+      kinopoiskKey: kinopoiskKey ?? this.kinopoiskKey,
       geminiModel: geminiModel ?? this.geminiModel,
       preferredPlayer: preferredPlayer ?? this.preferredPlayer,
       pairedDevices: pairedDevices ?? this.pairedDevices,
@@ -157,6 +171,10 @@ class AppControllerState {
       lastDiscoveryError: lastDiscoveryError ?? this.lastDiscoveryError,
       recentShownIds: recentShownIds ?? this.recentShownIds,
       recentShownLabels: recentShownLabels ?? this.recentShownLabels,
+      releaseNotificationsEnabled:
+          releaseNotificationsEnabled ?? this.releaseNotificationsEnabled,
+      recentDigitalReleases:
+          recentDigitalReleases ?? this.recentDigitalReleases,
     );
   }
 }
@@ -169,6 +187,8 @@ final appServicesProvider = Provider<AppServices>((ref) {
   final secrets = SecretStore();
   final tmdb = TmdbClient(http, log: log);
   final gemini = GeminiClient(http);
+  final kinopoisk = KinopoiskClient(http, log: log);
+  final digitalReleases = DigitalReleaseService(tmdb);
   final discovery = DiscoveryService(gemini: gemini, tmdb: tmdb, log: log);
   final starTv = StarTvClient(http);
   final updater = OtaUpdater(http);
@@ -185,11 +205,13 @@ final appServicesProvider = Provider<AppServices>((ref) {
     starTv: starTv,
     updater: updater,
     firebaseSync: firebaseSync,
+    kinopoisk: kinopoisk,
+    digitalReleases: digitalReleases,
   );
 });
 
 class AppServices {
-  const AppServices({
+  AppServices({
     required this.log,
     required this.http,
     required this.db,
@@ -201,7 +223,10 @@ class AppServices {
     required this.starTv,
     required this.updater,
     required this.firebaseSync,
-  });
+    KinopoiskClient? kinopoisk,
+    DigitalReleaseService? digitalReleases,
+  })  : kinopoisk = kinopoisk ?? KinopoiskClient(http, log: log),
+        digitalReleases = digitalReleases ?? DigitalReleaseService(tmdb);
 
   final DiagnosticsLog log;
   final StarFilmHttpClient http;
@@ -214,6 +239,8 @@ class AppServices {
   final StarTvClient starTv;
   final OtaUpdater updater;
   final FirebaseSyncAdapter firebaseSync;
+  final KinopoiskClient kinopoisk;
+  final DigitalReleaseService digitalReleases;
 }
 
 final appControllerProvider =
@@ -227,6 +254,8 @@ class AppController extends Notifier<AppControllerState> {
   static const _prefPlayer = 'starfilm.preferred_player';
   static const _prefSelectedTv = 'starfilm.selected_tv';
   static const _prefSyncCursor = 'starfilm.sync_cursor_ms';
+  static const _prefReleaseAlerts = 'starfilm.release_alerts_enabled';
+  static const _prefReleaseCheckedAt = 'starfilm.release_checked_ms';
 
   @override
   AppControllerState build() {
@@ -251,9 +280,11 @@ class AppController extends Notifier<AppControllerState> {
       final collections = await _s.repo.listCollections(activeId);
       final tmdbKey = await _s.secrets.getTmdbKey();
       final geminiKey = await _s.secrets.getGeminiKey();
+      final kinopoiskKey = await _s.secrets.getKinopoiskKey();
       final deviceId = await _s.secrets.getOrCreateDeviceId();
       final tvs = await _s.secrets.loadStarTvDevices();
       final pendingCount = await _s.repo.pendingChangesCount();
+      final releaseAlerts = prefs.getBool(_prefReleaseAlerts) ?? true;
 
       state = state.copyWith(
         initialized: true,
@@ -265,6 +296,7 @@ class AppController extends Notifier<AppControllerState> {
         collections: collections,
         tmdbKey: tmdbKey,
         geminiKey: geminiKey,
+        kinopoiskKey: kinopoiskKey,
         geminiModel: prefs.getString(_prefGeminiModel) ?? 'gemini-3.5-flash-lite',
         preferredPlayer: MobilePlayerId.fromId(prefs.getString(_prefPlayer)),
         pairedDevices: tvs,
@@ -279,9 +311,13 @@ class AppController extends Notifier<AppControllerState> {
                 : SyncStatusState.offlineLocal)
             : SyncStatusState.notConfigured,
         pendingSyncCount: pendingCount,
+        releaseNotificationsEnabled: releaseAlerts,
       );
       if (cloudUser != null) {
         Future.microtask(syncCloudNow);
+      }
+      if (releaseAlerts && tmdbKey.isNotEmpty) {
+        Future.microtask(() => checkMovieDigitalReleases(manual: false));
       }
     } catch (e) {
       _s.log.error('Bootstrap failed: $e');
@@ -342,17 +378,94 @@ class AppController extends Notifier<AppControllerState> {
     state = state.copyWith(uiLanguage: normalized);
   }
 
-  Future<void> setApiKeys({String? tmdbKey, String? geminiKey}) async {
+  Future<void> setApiKeys({
+    String? tmdbKey,
+    String? geminiKey,
+    String? kinopoiskKey,
+  }) async {
     if (tmdbKey != null) {
       await _s.secrets.setTmdbKey(tmdbKey);
     }
     if (geminiKey != null) {
       await _s.secrets.setGeminiKey(geminiKey);
     }
+    if (kinopoiskKey != null) {
+      await _s.secrets.setKinopoiskKey(kinopoiskKey);
+    }
     state = state.copyWith(
       tmdbKey: tmdbKey?.trim() ?? state.tmdbKey,
       geminiKey: geminiKey?.trim() ?? state.geminiKey,
+      kinopoiskKey: kinopoiskKey?.trim() ?? state.kinopoiskKey,
     );
+  }
+
+  Future<void> setReleaseNotificationsEnabled(bool enabled) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_prefReleaseAlerts, enabled);
+    state = state.copyWith(releaseNotificationsEnabled: enabled);
+  }
+
+  Future<List<DigitalReleaseMatch>> checkMovieDigitalReleases({
+    bool manual = false,
+  }) async {
+    if (!manual && !state.releaseNotificationsEnabled) return const [];
+    if (state.tmdbKey.trim().isEmpty) return const [];
+
+    final prefs = await SharedPreferences.getInstance();
+    if (!manual) {
+      final lastMs = prefs.getInt(_prefReleaseCheckedAt) ?? 0;
+      const twelveHoursMs = 12 * 60 * 60 * 1000;
+      if (DateTime.now().millisecondsSinceEpoch - lastMs < twelveHoursMs) {
+        return const [];
+      }
+    }
+
+    final matches = await _s.digitalReleases.findNewlyReleasedMovies(
+      tmdbApiKey: state.tmdbKey,
+      entries: state.entries,
+    );
+    await prefs.setInt(_prefReleaseCheckedAt, DateTime.now().millisecondsSinceEpoch);
+
+    if (matches.isNotEmpty) {
+      state = state.copyWith(recentDigitalReleases: matches);
+      final titles = matches.map((m) => m.entry.title).take(3).join(', ');
+      final s = state.strings;
+      await DeviceBridge.showReleaseNotification(
+        title: s.t('app_name'),
+        body: s.t('release_found_banner', {'titles': titles}),
+      );
+    }
+    return matches;
+  }
+
+  Future<RatingImportBatchResult> importCsvRatings(
+    String rawText, {
+    void Function(int done, int total)? onProgress,
+  }) async {
+    if (state.tmdbKey.trim().isEmpty) {
+      throw StateError('TMDB API key is required for CSV/TSV resolution');
+    }
+    final rows = RatingCsvParser.parse(rawText);
+    final batch = await RatingCsvImporter(_s.tmdb).resolveRows(
+      tmdbApiKey: state.tmdbKey,
+      rows: rows,
+      onProgress: onProgress,
+    );
+    for (final item in batch.resolved) {
+      await saveEntryAction(
+        mediaType: item.candidate.mediaType,
+        tmdbId: item.candidate.tmdbId,
+        title: item.candidate.title,
+        originalTitle: item.candidate.originalTitle,
+        year: item.candidate.year,
+        posterPath: item.candidate.posterPath,
+        genreIds: item.candidate.genreIds,
+        tmdbRating: item.candidate.voteAverage,
+        status: WatchStatus.watched,
+        userRating: item.rating,
+      );
+    }
+    return batch;
   }
 
   Future<void> setGeminiModel(String model) async {
@@ -740,6 +853,14 @@ class AppController extends Notifier<AppControllerState> {
         bearerToken: token,
         provider: 'gemini',
         apiKey: state.geminiKey,
+      );
+    }
+    if (state.kinopoiskKey.isNotEmpty) {
+      await _s.starTv.transferApiKey(
+        device: tv,
+        bearerToken: token,
+        provider: 'kinopoisk',
+        apiKey: state.kinopoiskKey,
       );
     }
   }

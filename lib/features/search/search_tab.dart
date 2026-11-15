@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../app/app_state.dart';
 import '../../app/theme.dart';
 import '../../core/models/media_key.dart';
+import '../../core/platform/device_bridge.dart';
 import '../details/details_sheet.dart';
 import '../search/tmdb_client.dart';
 import '../search/tmdb_matcher.dart';
@@ -29,6 +30,28 @@ class _SearchTabState extends ConsumerState<SearchTab> {
   void dispose() {
     _queryController.dispose();
     super.dispose();
+  }
+
+  Future<void> _voiceSearch() async {
+    final state = ref.read(appControllerProvider);
+    final s = state.strings;
+    final langTag =
+        DeviceBridge.toSpeechLocaleTag(state.activeProfile.preferences.contentLanguage);
+    final spoken = await DeviceBridge.startVoiceInput(
+      languageTag: langTag,
+      prompt: s.t('voice_input_tooltip'),
+    );
+    if (!mounted) return;
+    if (spoken == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(s.t('voice_unavailable'))),
+      );
+      return;
+    }
+    if (spoken.isNotEmpty) {
+      _queryController.text = spoken;
+      await _search();
+    }
   }
 
   Future<void> _search() async {
@@ -125,9 +148,19 @@ class _SearchTabState extends ConsumerState<SearchTab> {
                 decoration: InputDecoration(
                   hintText: s.t('search_hint'),
                   prefixIcon: const Icon(Icons.search),
-                  suffixIcon: IconButton(
-                    icon: const Icon(Icons.arrow_forward, color: StarFilmColors.limeFocus),
-                    onPressed: _search,
+                  suffixIcon: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        tooltip: s.t('voice_input_tooltip'),
+                        icon: const Icon(Icons.mic_none),
+                        onPressed: _voiceSearch,
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.arrow_forward, color: StarFilmColors.limeFocus),
+                        onPressed: _search,
+                      ),
+                    ],
                   ),
                 ),
               ),
