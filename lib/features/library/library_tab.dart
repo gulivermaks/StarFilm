@@ -10,7 +10,7 @@ import '../details/details_sheet.dart';
 import '../search/tmdb_client.dart';
 import 'backup_codec.dart';
 
-enum _LibrarySection { watchlist, watching, watched, collections }
+enum _LibrarySection { watchlist, watching, watched, other, collections }
 
 enum _LibrarySort { recent, rating, year, title }
 
@@ -46,6 +46,7 @@ class _LibraryTabState extends ConsumerState<LibraryTab> {
                   _tabChip(_LibrarySection.watchlist, s.t('status_watchlist')),
                   _tabChip(_LibrarySection.watching, s.t('status_watching')),
                   _tabChip(_LibrarySection.watched, s.t('status_watched')),
+                  _tabChip(_LibrarySection.other, s.t('library_hidden_other')),
                   _tabChip(_LibrarySection.collections, s.t('collections')),
                 ],
               ),
@@ -150,11 +151,18 @@ class _LibraryTabState extends ConsumerState<LibraryTab> {
       _LibrarySection.watchlist => WatchStatus.watchlist,
       _LibrarySection.watching => WatchStatus.watching,
       _LibrarySection.watched => WatchStatus.watched,
+      _LibrarySection.other => WatchStatus.dismissed,
       _LibrarySection.collections => WatchStatus.none,
     };
 
     final items = state.entries.where((e) {
-      if (e.status != targetStatus) return false;
+      if (_section == _LibrarySection.other) {
+        if (e.status != WatchStatus.dismissed && e.status != WatchStatus.none) {
+          return false;
+        }
+      } else if (e.status != targetStatus) {
+        return false;
+      }
       if (_typeFilter != null && e.mediaType != _typeFilter) return false;
       if (_searchQuery.isNotEmpty) {
         final haystack =
@@ -213,6 +221,14 @@ class _LibraryTabState extends ConsumerState<LibraryTab> {
               [
                 if (entry.year != null) '${entry.year}',
                 if (entry.userRating != null) '★ ${entry.userRating}/10',
+                if (_section == _LibrarySection.other) ...[
+                  if (entry.status == WatchStatus.dismissed)
+                    s.t('status_dismissed')
+                  else if (entry.sentiment == Sentiment.liked)
+                    s.t('like')
+                  else if (entry.sentiment == Sentiment.disliked)
+                    s.t('dislike'),
+                ],
                 entry.mediaType == MediaType.tv ? s.t('type_tv') : s.t('type_movie'),
               ].join(' • '),
             ),

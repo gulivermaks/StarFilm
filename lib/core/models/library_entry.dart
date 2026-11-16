@@ -225,4 +225,32 @@ class LibraryEntry {
           : olderMeta.updatedByDevice,
     );
   }
+
+  /// True when all user-visible fields and change timestamps match [other].
+  bool contentEquals(LibraryEntry other) {
+    if (profileId != other.profileId ||
+        mediaType != other.mediaType ||
+        tmdbId != other.tmdbId ||
+        title != other.title ||
+        originalTitle != other.originalTitle ||
+        year != other.year ||
+        posterPath != other.posterPath ||
+        tmdbRating != other.tmdbRating ||
+        runtimeMinutes != other.runtimeMinutes ||
+        status != other.status ||
+        userRating != other.userRating ||
+        sentiment != other.sentiment ||
+        deletedAt != other.deletedAt ||
+        statusChangedAt != other.statusChangedAt ||
+        ratingChangedAt != other.ratingChangedAt ||
+        sentimentChangedAt != other.sentimentChangedAt ||
+        clientUpdatedAt != other.clientUpdatedAt ||
+        genreIds.length != other.genreIds.length) {
+      return false;
+    }
+    for (var i = 0; i < genreIds.length; i++) {
+      if (genreIds[i] != other.genreIds[i]) return false;
+    }
+    return true;
+  }
 }

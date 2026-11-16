@@ -147,6 +147,7 @@ class LibraryRepository {
     String profileId, {
     String accountUid = '',
     int? nowMs,
+    bool queueSync = true,
   }) async {
     if (profileId == 'main') {
       throw ArgumentError('Main profile cannot be deleted');
@@ -158,6 +159,7 @@ class LibraryRepository {
     await saveProfile(
       target.copyWith(clientUpdatedAt: ts, deletedAt: ts),
       accountUid: accountUid,
+      queueSync: queueSync,
     );
   }
 
@@ -306,19 +308,72 @@ class LibraryRepository {
     bool queueSync = true,
   }) async {
     var mergedCount = 0;
+
+    // 1. Apply remote profile deletions first (e.g., profiles deleted on StarTV).
+    if (bundle.deletedProfiles.isNotEmpty) {
+      final profilesBefore = await listProfiles(includeDeleted: true);
+      for (final delEntry in bundle.deletedProfiles.entries) {
+        final pid = delEntry.key;
+        final delAt = delEntry.value;
+        if (pid == 'main' || !UserProfile.isValidId(pid)) continue;
+        final existing =
+            profilesBefore.where((p) => p.id == pid).firstOrNull;
+        if (existing != null && !existing.isDeleted && delAt >= existing.clientUpdatedAt) {
+          await deleteProfile(
+            pid,
+            accountUid: accountUid,
+            nowMs: delAt,
+            queueSync: queueSync,
+          );
+          mergedCount++;
+        }
+      }
+    }
+
     for (final pBundle in bundle.profiles) {
       final profiles = await listProfiles(includeDeleted: true);
       final existingProfile =
           profiles.where((p) => p.id == pBundle.profile.id).firstOrNull;
+      final incomingPrefs = (bundle.sourceFormat == 'startv' && existingProfile != null)
+          ? pBundle.profile.preferences.copyWith(
+              favoriteGenres: existingProfile.preferences.favoriteGenres,
+            )
+          : pBundle.profile.preferences;
+      final incomingProfile = pBundle.profile.copyWith(preferences: incomingPrefs);
+
       if (existingProfile == null) {
         final activeCount = profiles.where((p) => !p.isDeleted).length;
         if (activeCount < UserProfile.maxProfiles) {
-          await saveProfile(pBundle.profile, accountUid: accountUid, queueSync: queueSync);
+          await saveProfile(incomingProfile, accountUid: accountUid, queueSync: queueSync);
+          mergedCount++;
         } else {
           continue;
         }
-      } else if (pBundle.profile.clientUpdatedAt > existingProfile.clientUpdatedAt) {
-        await saveProfile(pBundle.profile, accountUid: accountUid, queueSync: queueSync);
+      } else if (existingProfile.isDeleted) {
+        if (incomingProfile.clientUpdatedAt > (existingProfile.deletedAt ?? 0)) {
+          await saveProfile(incomingProfile, accountUid: accountUid, queueSync: queueSync);
+          mergedCount++;
+        } else {
+          continue;
+        }
+      } else if (incomingProfile.clientUpdatedAt > existingProfile.clientUpdatedAt) {
+        final samePrefs = _listIntEquals(
+              existingProfile.preferences.excludedGenres,
+              incomingProfile.preferences.excludedGenres,
+            ) &&
+            _listIntEquals(
+              existingProfile.preferences.favoriteGenres,
+              incomingProfile.preferences.favoriteGenres,
+            ) &&
+            existingProfile.preferences.contentLanguage ==
+                incomingProfile.preferences.contentLanguage &&
+            existingProfile.preferences.personalized ==
+                incomingProfile.preferences.personalized;
+        if (existingProfile.name != incomingProfile.name ||
+            existingProfile.deletedAt != incomingProfile.deletedAt ||
+            !samePrefs) {
+          await saveProfile(incomingProfile, accountUid: accountUid, queueSync: queueSync);
+        }
       }
 
       for (final incoming in pBundle.entries) {
@@ -326,6 +381,9 @@ class LibraryRepository {
         final merged = existing == null
             ? incoming.normalized(nowMs: incoming.clientUpdatedAt, deviceId: deviceId)
             : LibraryEntry.merge(existing, incoming);
+        if (existing != null && existing.contentEquals(merged)) {
+          continue;
+        }
         await _writeEntryRow(merged);
         if (queueSync) {
           await _enqueueChange(
@@ -344,7 +402,7 @@ class LibraryRepository {
         final parsed = MediaKey.tryParse(entry.key);
         if (parsed == null) continue;
         final existing = await findEntry(pBundle.profile.id, parsed);
-        if (existing != null && entry.value > existing.clientUpdatedAt) {
+        if (existing != null && !existing.isDeleted && entry.value > existing.clientUpdatedAt) {
           await softDeleteEntry(
             pBundle.profile.id,
             parsed,
@@ -353,6 +411,7 @@ class LibraryRepository {
             nowMs: entry.value,
             queueSync: queueSync,
           );
+          mergedCount++;
         }
       }
 
@@ -369,6 +428,14 @@ class LibraryRepository {
       }
     }
     return mergedCount;
+  }
+
+  static bool _listIntEquals(List<int> a, List<int> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
   }
 
   /// Replaces local library state with an exact snapshot from [bundle].

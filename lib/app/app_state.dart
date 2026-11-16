@@ -1038,6 +1038,26 @@ class AppController extends Notifier<AppControllerState> {
     );
   }
 
+  Future<void> launchTrailerOnTv({
+    required int tmdbId,
+    required MediaType mediaType,
+    required String title,
+    int? year,
+  }) async {
+    final tv = state.activeTv;
+    if (tv == null) throw StateError('No StarTV device paired');
+    final token = await _s.secrets.getStarTvToken(tv);
+    if (token == null || token.isEmpty) throw StateError('Missing StarTV token');
+    await _s.starTv.launchTrailer(
+      device: tv,
+      bearerToken: token,
+      tmdbId: tmdbId,
+      mediaType: mediaType,
+      title: title,
+      year: year,
+    );
+  }
+
   Future<int> syncWithHomeTv() async {
     final tv = state.activeTv;
     if (tv == null) throw StateError('No StarTV device paired');
@@ -1080,6 +1100,9 @@ class AppController extends Notifier<AppControllerState> {
       accountUid: state.cloudUid,
     );
     await _refreshActiveProfileState();
+    if (state.pendingSyncCount > 0) {
+      _scheduleDebouncedSync();
+    }
     return count;
   }
 

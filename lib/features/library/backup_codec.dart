@@ -47,11 +47,13 @@ class BackupBundle {
     required this.sourceFormat,
     required this.activeProfileId,
     required this.profiles,
+    this.deletedProfiles = const {},
   });
 
   final String sourceFormat; // 'starfilm' or 'startv'
   final String activeProfileId;
   final List<ImportedProfileBundle> profiles;
+  final Map<String, int> deletedProfiles;
 }
 
 /// Encodes/decodes both `starfilm_backup.json` and StarTV (`SettingsBackup` / `TasteStore` v1) JSON.
@@ -231,7 +233,22 @@ class BackupCodec {
       sourceFormat: 'starfilm',
       activeProfileId: (root['activeProfileId'] ?? 'main').toString(),
       profiles: bundles,
+      deletedProfiles: _parseDeletedProfiles(root['deletedProfiles']),
     );
+  }
+
+  static Map<String, int> _parseDeletedProfiles(Object? raw) {
+    final out = <String, int>{};
+    if (raw is Map) {
+      raw.forEach((k, v) {
+        final pid = k.toString().trim();
+        final ts = _asInt(v);
+        if (ts != null && ts > 0 && pid != 'main' && UserProfile.isValidId(pid)) {
+          out[pid] = ts;
+        }
+      });
+    }
+    return out;
   }
 
   static BackupBundle _decodeStarTv(Map<String, dynamic> root, int nowMs) {
@@ -277,6 +294,7 @@ class BackupCodec {
       sourceFormat: 'startv',
       activeProfileId: activeId,
       profiles: bundles,
+      deletedProfiles: _parseDeletedProfiles(root['deletedProfiles']),
     );
   }
 

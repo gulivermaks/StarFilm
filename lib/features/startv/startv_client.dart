@@ -197,9 +197,10 @@ class StarTvClient {
       'profiles': profiles.where((p) => !p.isDeleted).map((p) {
         final entries = entriesByProfile[p.id] ?? const <LibraryEntry>[];
         final tombstones = deletedByProfile[p.id] ?? const <String, int>{};
+        final outgoingName = p.isMain && isDefaultMainProfileName(p.name) ? '' : p.name;
         return {
           'id': p.id,
-          'name': p.name,
+          'name': outgoingName,
           'profileUpdatedAt': p.clientUpdatedAt,
           'library': {
             'schemaVersion': 1,
@@ -261,6 +262,20 @@ class StarTvClient {
     return BackupCodec.decodeBackup(jsonEncode({
       'schemaVersion': 1,
       'profiles': profilesObj is Map<String, dynamic> ? profilesObj : decoded,
+      if (decoded['deletedProfiles'] is Map)
+        'deletedProfiles': decoded['deletedProfiles'],
     }));
+  }
+
+  static bool isDefaultMainProfileName(String name) {
+    final low = name.trim().toLowerCase();
+    return low.isEmpty ||
+        low == 'main' ||
+        low == 'main profile' ||
+        low == 'головний' ||
+        low == 'основной' ||
+        low == 'основний' ||
+        low == 'профіль' ||
+        low == 'профиль';
   }
 }

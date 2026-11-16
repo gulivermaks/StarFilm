@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../app/app_state.dart';
+import '../../app/l10n.dart';
 import '../../app/theme.dart';
 import '../../core/models/library_entry.dart';
 import '../../core/models/media_key.dart';
@@ -12,6 +13,7 @@ import '../players/mobile_players.dart';
 import '../ratings/kinopoisk_client.dart';
 import '../search/tmdb_client.dart';
 import '../startv/startv_client.dart';
+import '../startv/startv_models.dart';
 import '../startv/startv_pairing_dialog.dart';
 
 class MediaDetailsSheet extends ConsumerStatefulWidget {
@@ -480,47 +482,95 @@ class _MediaDetailsSheetState extends ConsumerState<MediaDetailsSheet> {
           ),
           const SizedBox(height: 16),
           // Watch buttons
-          Row(
-            children: [
-              if (state.activeTv != null) ...[
+          if (state.activeTv != null) ...[
+            Row(
+              children: [
                 Expanded(
                   child: FilledButton.icon(
                     onPressed: () => _watchOnTv(title, originalTitle, year),
+                    onLongPress: () => _pickPlayerAndWatchOnTv(
+                      title,
+                      originalTitle,
+                      year,
+                      state.activeTv!,
+                    ),
                     icon: const Icon(Icons.tv),
-                    label: Text(s.t('watch_on_tv')),
+                    label: Text(
+                      s.t('watch_on_tv'),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
                 ),
-                const SizedBox(width: 10),
+                const SizedBox(width: 8),
+                OutlinedButton(
+                  style: OutlinedButton.styleFrom(
+                    minimumSize: const Size(48, 44),
+                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                  ),
+                  onPressed: () => _pickPlayerAndWatchOnTv(
+                    title,
+                    originalTitle,
+                    year,
+                    state.activeTv!,
+                  ),
+                  child: Tooltip(
+                    message: s.t('choose_tv_player'),
+                    child: const Icon(Icons.arrow_drop_down),
+                  ),
+                ),
               ],
-              Expanded(
-                child: state.activeTv == null
-                    ? FilledButton.icon(
-                        onPressed: () => _watchOnPhone(title, originalTitle, year),
-                        icon: const Icon(Icons.play_arrow_rounded),
-                        label: Text(s.t('watch_on_phone')),
-                      )
-                    : OutlinedButton.icon(
-                        onPressed: () => _watchOnPhone(title, originalTitle, year),
-                        icon: const Icon(Icons.smartphone),
-                        label: Text(s.t('watch_on_phone')),
-                      ),
-              ),
-            ],
-          ),
+            ),
+            const SizedBox(height: 10),
+            OutlinedButton.icon(
+              onPressed: () => _watchOnPhone(title, originalTitle, year),
+              icon: const Icon(Icons.smartphone),
+              label: Text(s.t('watch_on_phone')),
+            ),
+          ] else
+            FilledButton.icon(
+              onPressed: () => _watchOnPhone(title, originalTitle, year),
+              icon: const Icon(Icons.play_arrow_rounded),
+              label: Text(s.t('watch_on_phone')),
+            ),
           const SizedBox(height: 10),
-          OutlinedButton.icon(
-            onPressed: () {
-              final uri = PlayerLaunchPlanner.youtubeTrailerUri(
-                _details?.youtubeTrailerKey,
-                title: title,
-                year: year,
-              );
-              if (uri != null) {
-                launchUrl(uri, mode: LaunchMode.externalApplication);
-              }
-            },
-            icon: const Icon(Icons.ondemand_video),
-            label: Text(s.t('trailer')),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: () {
+                    final uri = PlayerLaunchPlanner.youtubeTrailerUri(
+                      _details?.youtubeTrailerKey,
+                      title: title,
+                      year: year,
+                    );
+                    if (uri != null) {
+                      launchUrl(uri, mode: LaunchMode.externalApplication);
+                    }
+                  },
+                  icon: const Icon(Icons.ondemand_video),
+                  label: Text(
+                    s.t('trailer'),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ),
+              if (state.activeTv != null) ...[
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => _launchTrailerOnTv(title, year),
+                    icon: const Icon(Icons.connected_tv),
+                    label: Text(
+                      s.t('trailer_on_tv'),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ),
+              ],
+            ],
           ),
           const SizedBox(height: 14),
           // Collections selector
@@ -773,19 +823,16 @@ class _MediaDetailsSheetState extends ConsumerState<MediaDetailsSheet> {
     await MobilePlayerLauncher.launch(target);
   }
 
-  Future<void> _watchOnTv(String title, String originalTitle, int? year) async {
+  Future<void> _runTvAction(
+    Future<void> Function() action,
+    String successMessage,
+  ) async {
     final s = ref.read(appControllerProvider).strings;
     try {
-      await ref.read(appControllerProvider.notifier).launchOnTv(
-            tmdbId: widget.tmdbId,
-            mediaType: widget.mediaType,
-            title: title,
-            originalTitle: originalTitle,
-            year: year,
-          );
+      await action();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(s.t('startv_sent'))),
+          SnackBar(content: Text(successMessage)),
         );
       }
     } on StarTvException catch (e) {
@@ -808,6 +855,109 @@ class _MediaDetailsSheetState extends ConsumerState<MediaDetailsSheet> {
         );
       }
     }
+  }
+
+  Future<void> _watchOnTv(
+    String title,
+    String originalTitle,
+    int? year, {
+    String player = 'auto',
+  }) async {
+    final s = ref.read(appControllerProvider).strings;
+    await _runTvAction(
+      () => ref.read(appControllerProvider.notifier).launchOnTv(
+            tmdbId: widget.tmdbId,
+            mediaType: widget.mediaType,
+            title: title,
+            originalTitle: originalTitle,
+            year: year,
+            player: player,
+          ),
+      s.t('startv_sent'),
+    );
+  }
+
+  Future<void> _launchTrailerOnTv(String title, int? year) async {
+    final s = ref.read(appControllerProvider).strings;
+    await _runTvAction(
+      () => ref.read(appControllerProvider.notifier).launchTrailerOnTv(
+            tmdbId: widget.tmdbId,
+            mediaType: widget.mediaType,
+            title: title,
+            year: year,
+          ),
+      s.t('trailer_tv_sent'),
+    );
+  }
+
+  String _tvPlayerLabel(String code, AppStrings s) {
+    switch (code.trim().toLowerCase()) {
+      case 'auto':
+        return s.t('player_auto');
+      case 'lampa':
+        return 'Lampa';
+      case 'torrserve':
+        return 'TorrServe';
+      case 'stremio':
+        return 'Stremio';
+      case 'num':
+        return 'NUM';
+      case 'hdrezka':
+        return 'HDRezka';
+      case 'filmix':
+        return 'Filmix';
+      case 'megogo':
+        return 'MEGOGO';
+      case 'vlc':
+        return 'VLC';
+      case 'vimu':
+        return 'Vimu';
+      case 'kodi':
+        return 'Kodi';
+      case 'search':
+        return s.t('tv_player_search');
+      case 'browser':
+        return s.t('tv_player_browser');
+      default:
+        return code;
+    }
+  }
+
+  Future<void> _pickPlayerAndWatchOnTv(
+    String title,
+    String originalTitle,
+    int? year,
+    StarTvDevice tv,
+  ) async {
+    final s = ref.read(appControllerProvider).strings;
+    final players = tv.installedPlayers.isEmpty ? const ['auto'] : tv.installedPlayers;
+    final chosen = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: StarFilmColors.surface,
+      builder: (ctx) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+              child: Text(
+                s.t('choose_tv_player'),
+                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+              ),
+            ),
+            for (final code in players)
+              ListTile(
+                leading: const Icon(Icons.play_circle_outline, color: StarFilmColors.lime),
+                title: Text(_tvPlayerLabel(code, s)),
+                onTap: () => Navigator.of(ctx).pop(code),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (chosen == null || !mounted) return;
+    await _watchOnTv(title, originalTitle, year, player: chosen);
   }
 }
 
