@@ -39,3 +39,6 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/images/starfilm_icon.png
+    - assets/images/starfilm_logo.png

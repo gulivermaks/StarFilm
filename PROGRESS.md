@@ -241,8 +241,14 @@
 - [x] **P2.1.** Адаптивная иконка Android, монохромная иконка уведомлений, тёмный сплеш `#0B0D11`, `network_security_config.xml`, `flutter_localizations`, переводы и переименование/удаление профилей, копирование диагностики.
 - [x] **P2.2.** Написаны и пройдены unit/widget-тесты Этапов 1–3 (`57/57`, `stage1_sync_isolation_test.dart`, `stage2_3_improvements_test.dart`).
 
+### v0.11 — Синхронизация со StarTV v0.8, новый брендинг и безопасность (2026-11-16)
+- [x] **Логотипы и брендинг**: доработаны пользовательские логотипы (`Logo/`), обновлены иконки запуска Android (`mipmap-*`, `ic_launcher_background.xml` `#0B0D11`), монохромная иконка уведомлений (`ic_stat_starfilm.xml`), ассеты для GitHub (`docs/logo.png`, `docs/banner.png`) и UI-логотипы внутри приложения (`assets/images/starfilm_icon.png`, `starfilm_logo.png` на экране онбординга, в AppBar и настройках).
+- [x] **Синхронизация и сопряжение со StarTV**: `StarTvClient.syncLibrary` и `AppController.syncWithHomeTv()` обновляют список установленных на ТВ плееров (`installedPlayers`) из ответа `/api/library-sync` (с fallback на `fetchStatus`) и сохраняют обновлённый `StarTvDevice`. В `StarTvPairingDialog` и `StarTvQrPayload.tryParseHostPort` добавлен разбор ручного ввода `IP:port` / `http://ip:port` и разделены ошибки неверного IP (`startv_error_lan`) и неверного QR (`startv_invalid_qr`).
+- [x] **Firestore Rules & README**: в `firestore.rules` добавлена валидация `collectionId` по регулярному выражению `^[A-Za-z0-9_-]{1,48}$` (добавлен тест в `tools/firestore_rules_test/rules.test.mjs`). `README.md` переписан на украинском языке с актуальным описанием и логотипами.
+- [x] **Проверки**: `flutter analyze` (0 замечаний), `flutter test` (63/63, включая `dual_sync_and_tv_fixes_test.dart`), эмулятор Firestore (`4/4`).
+
 ### Следующий шаг
-- Опубликовано обновление `v0.10` (`versionCode=10`) после сквозной проверки **StarFilm ↔ StarTV** (удаление профилей в обе стороны, нулевая лишняя запись в облако при повторной синхронизации, сохранение `favoriteGenres` и локализации «Основной / Головний», раздел «Скрытые / Прочие», выбор плеера ТВ и «Трейлер на ТВ»). При желании можно проверить OTA на Samsung S26 Ultra (`v0.08`/`v0.09` → `v0.10`) и скан QR-кода камерой с экрана телевизора.
+- Подготовить публикацию `v0.11` (`versionCode=11`) на GitHub в связке со **StarTV `v0.8`** (`versionCode=62`); при необходимости выполнить живую проверку OTA, ручного ввода `IP:port` и сканирования QR на связке Pixel XL / Samsung S26 Ultra + Tanix W2.
 
 ---
 

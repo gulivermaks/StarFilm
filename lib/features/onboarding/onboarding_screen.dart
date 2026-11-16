@@ -238,6 +238,16 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
       case 0:
         return ListView(
           children: [
+            Center(
+              child: Padding(
+                padding: const EdgeInsets.only(bottom: 16),
+                child: Image.asset(
+                  'assets/images/starfilm_logo.png',
+                  height: 56,
+                  errorBuilder: (_, _, _) => const SizedBox.shrink(),
+                ),
+              ),
+            ),
             Text(
               s.t('ui_language'),
               style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700),

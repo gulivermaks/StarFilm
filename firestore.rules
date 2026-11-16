@@ -66,8 +66,7 @@ service cloud.firestore {
         match /collections/{collectionId} {
           allow read: if isOwner(userId);
           allow create, update: if isOwner(userId)
-            && collectionId.size() >= 1
-            && collectionId.size() <= 48
+            && collectionId.matches('^[A-Za-z0-9_-]{1,48}$')
             && request.resource.data.keys().hasOnly([
               'title', 'mediaKeys', 'clientUpdatedAt', 'serverSyncedAt', 'deletedAt'
             ])

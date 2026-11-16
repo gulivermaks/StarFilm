@@ -59,7 +59,9 @@ class _StarTvPairingDialogState extends ConsumerState<StarTvPairingDialog> {
       return s.t('startv_error_lan');
     }
     if (e is FormatException) {
-      return s.t('startv_invalid_qr');
+      return e.message == 'invalid_qr'
+          ? s.t('startv_invalid_qr')
+          : s.t('startv_error_lan');
     }
     if (e is StarTvException) {
       if (e.statusCode == 401 || e.statusCode == 403) {
@@ -77,7 +79,7 @@ class _StarTvPairingDialogState extends ConsumerState<StarTvPairingDialog> {
       _error = null;
     });
     try {
-      String ip = _ipController.text.trim();
+      String ip;
       int port = 8088;
       String pin = _pinController.text.trim();
 
@@ -90,6 +92,13 @@ class _StarTvPairingDialogState extends ConsumerState<StarTvPairingDialog> {
         ip = parsed.ip;
         port = parsed.port;
         pin = parsed.pin;
+      } else {
+        final manual = StarTvQrPayload.tryParseHostPort(_ipController.text);
+        if (manual == null) {
+          throw const FormatException('invalid_ip');
+        }
+        ip = manual.ip;
+        port = manual.port;
       }
 
       final client = ref.read(appServicesProvider).starTv;
@@ -151,10 +160,11 @@ class _StarTvPairingDialogState extends ConsumerState<StarTvPairingDialog> {
               const SizedBox(height: 8),
               TextField(
                 controller: _ipController,
-                keyboardType: TextInputType.number,
+                keyboardType: TextInputType.url,
                 decoration: InputDecoration(
                   isDense: true,
                   labelText: s.t('startv_ip_label'),
+                  hintText: '192.168.1.50:8088',
                 ),
               ),
               const SizedBox(height: 8),

@@ -128,6 +128,12 @@ test('rules reject invalid profileId, invalid itemKey, oversized title, and inva
       title: 'Zero tmdbId',
     }),
   );
+  await assertFails(
+    setDoc(doc(aliceDb, 'users/alice/profiles/main/collections/bad id!'), {
+      title: 'Invalid Collection ID',
+      mediaKeys: [],
+    }),
+  );
 });
 
 test('owner can delete own doc, while others cannot', async () => {

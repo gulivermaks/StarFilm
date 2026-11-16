@@ -638,6 +638,16 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             label: Text('${s.t('check_updates')} $_versionLabel'),
           ),
           const SizedBox(height: 20),
+          Center(
+            child: Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Image.asset(
+                'assets/images/starfilm_logo.png',
+                height: 32,
+                errorBuilder: (_, _, _) => const SizedBox.shrink(),
+              ),
+            ),
+          ),
           Text(
             s.t('tmdb_attribution'),
             textAlign: TextAlign.center,

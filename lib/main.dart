@@ -109,6 +109,13 @@ class _HomeShellState extends ConsumerState<HomeShell> with WidgetsBindingObserv
         titleSpacing: 16,
         title: Row(
           children: [
+            Image.asset(
+              'assets/images/starfilm_icon.png',
+              width: 28,
+              height: 28,
+              errorBuilder: (_, _, _) => const SizedBox.shrink(),
+            ),
+            const SizedBox(width: 8),
             const Text('StarFilm', style: TextStyle(fontWeight: FontWeight.w800)),
             const SizedBox(width: 10),
             Flexible(

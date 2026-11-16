@@ -26,6 +26,7 @@ import 'package:starfilm/features/search/tmdb_client.dart';
 import 'package:starfilm/features/settings/ota_updater.dart';
 import 'package:starfilm/features/startv/startv_client.dart';
 import 'package:starfilm/features/startv/startv_models.dart';
+import 'package:starfilm/features/startv/startv_pairing_dialog.dart';
 
 class _MemSecrets extends SecretStore {
   String tmdb = 'TMDB_OK';
@@ -408,5 +409,178 @@ void main() {
     await tester.tap(find.text('VLC'));
     await tester.pumpAndSettle();
     expect(launchedPlayer, 'vlc');
+  });
+
+  test('syncWithHomeTv updates installedPlayers from /api/library-sync and fallback /api/status',
+      () async {
+    SharedPreferences.setMockInitialValues({'starfilm_onboarding': true, 'starfilm_ui_lang': 'uk'});
+    var syncReturnsPlayers = true;
+    final mock = MockClient((req) async {
+      if (req.url.path == '/api/library-sync') {
+        return http.Response(
+          jsonEncode({
+            'schemaVersion': 1,
+            if (syncReturnsPlayers) 'installedPlayers': ['auto', 'lampa', 'vlc', 'vimu'],
+            'profiles': {
+              'active': 'main',
+              'items': [
+                {
+                  'id': 'main',
+                  'name': '',
+                  'profileUpdatedAt': 2000,
+                  'library': {
+                    'schemaVersion': 1,
+                    'personalized': true,
+                    'profileUpdatedAt': 2000,
+                    'filters': {'excludedGenres': [], 'contentLanguage': 'uk'},
+                    'items': [],
+                  },
+                },
+              ],
+            },
+          }),
+          200,
+        );
+      }
+      if (req.url.path == '/api/status') {
+        return http.Response(
+          jsonEncode({
+            'status': 'ok',
+            'tvId': 'tv_1',
+            'deviceName': 'StarTV W2',
+            'installedPlayers': ['auto', 'lampa', 'kodi'],
+            'syncApiVersion': 1,
+          }),
+          200,
+        );
+      }
+      return http.Response('{}', 404);
+    });
+
+    final db = AppDatabase(NativeDatabase.memory());
+    addTearDown(db.close);
+    final secrets = _MemSecrets();
+    await secrets.saveStarTvDevice(
+      const StarTvDevice(
+        tvId: 'tv_1',
+        ip: '192.168.1.50',
+        port: 8088,
+        deviceName: 'StarTV W2',
+        trustMode: StarTvTrustMode.home,
+        installedPlayers: ['auto', 'lampa'],
+      ),
+      'tok_1',
+    );
+    final services = _buildTestServices(db: db, mockHttp: mock, secrets: secrets);
+    final container = ProviderContainer(
+      overrides: [appServicesProvider.overrideWithValue(services)],
+    );
+    addTearDown(container.dispose);
+    final n = container.read(appControllerProvider.notifier);
+    await n.bootstrap();
+
+    await n.syncWithHomeTv();
+    expect(
+      container.read(appControllerProvider).activeTv?.installedPlayers,
+      ['auto', 'lampa', 'vlc', 'vimu'],
+    );
+
+    syncReturnsPlayers = false;
+    await n.syncWithHomeTv();
+    expect(
+      container.read(appControllerProvider).activeTv?.installedPlayers,
+      ['auto', 'lampa', 'kodi'],
+    );
+  });
+
+  testWidgets('StarTvPairingDialog parses ip:port manually and separates IP vs QR errors',
+      (tester) async {
+    SharedPreferences.setMockInitialValues({'starfilm_onboarding': true, 'starfilm_ui_lang': 'uk'});
+    final requestedUris = <Uri>[];
+    final mock = MockClient((req) async {
+      requestedUris.add(req.url);
+      if (req.url.path == '/api/status') {
+        return http.Response(
+          jsonEncode({
+            'status': 'ok',
+            'tvId': 'tv_custom',
+            'deviceName': 'StarTV Box',
+            'installedPlayers': ['auto', 'lampa'],
+            'syncApiVersion': 1,
+          }),
+          200,
+        );
+      }
+      if (req.url.path == '/api/auth') {
+        return http.Response(
+          jsonEncode({
+            'status': 'ok',
+            'token': 'tok_custom',
+            'tvId': 'tv_custom',
+            'deviceName': 'StarTV Box',
+            'installedPlayers': ['auto', 'lampa'],
+            'syncApiVersion': 1,
+          }),
+          200,
+        );
+      }
+      return http.Response('{}', 404);
+    });
+
+    expect(
+      StarTvQrPayload.tryParseHostPort('192.168.1.50:8089'),
+      (ip: '192.168.1.50', port: 8089),
+    );
+    expect(
+      StarTvQrPayload.tryParseHostPort('10.0.0.5'),
+      (ip: '10.0.0.5', port: 8088),
+    );
+    expect(StarTvQrPayload.tryParseHostPort('8.8.8.8:8088'), isNull);
+    expect(StarTvQrPayload.tryParseHostPort('192.168.'), isNull);
+
+    final db = AppDatabase(NativeDatabase.memory());
+    addTearDown(db.close);
+    final secrets = _MemSecrets();
+    final services = _buildTestServices(db: db, mockHttp: mock, secrets: secrets);
+    final container = ProviderContainer(
+      overrides: [appServicesProvider.overrideWithValue(services)],
+    );
+    addTearDown(container.dispose);
+    await tester.runAsync(() async {
+      await container.read(appControllerProvider.notifier).bootstrap();
+    });
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: const MaterialApp(home: Scaffold(body: StarTvPairingDialog())),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final fields = find.byType(TextField);
+    final okButton = find.text('ОК');
+    // Test invalid IP -> shows LAN error, not invalid QR error
+    await tester.enterText(fields.at(1), '8.8.8.8:8088');
+    await tester.enterText(fields.at(2), '123456');
+    await tester.tap(okButton);
+    await tester.pumpAndSettle();
+    expect(find.textContaining('192.168.x.x'), findsOneWidget);
+
+    // Test invalid QR -> shows invalid QR error
+    await tester.enterText(fields.at(0), 'not-a-valid-qr');
+    await tester.tap(okButton);
+    await tester.pumpAndSettle();
+    expect(find.textContaining('QR'), findsWidgets);
+
+    // Clear QR and pair using manual IP:port
+    await tester.enterText(fields.at(0), '');
+    await tester.enterText(fields.at(1), '192.168.1.50:8089');
+    await tester.enterText(fields.at(2), '123456');
+    await tester.tap(okButton);
+    await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+    await tester.pumpAndSettle();
+
+    expect(requestedUris.any((u) => u.host == '192.168.1.50' && u.port == 8089), isTrue);
   });
 }

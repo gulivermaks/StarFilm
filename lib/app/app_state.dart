@@ -1084,6 +1084,7 @@ class AppController extends Notifier<AppControllerState> {
       };
     }
 
+    List<String>? latestPlayers;
     final mergedFromTv = await _s.starTv.syncLibrary(
       device: tv,
       bearerToken: token,
@@ -1092,7 +1093,33 @@ class AppController extends Notifier<AppControllerState> {
       entriesByProfile: entriesMap,
       deletedByProfile: deletedMap,
       deletedProfiles: deletedProfiles,
+      onInstalledPlayers: (players) => latestPlayers = players,
     );
+
+    if (latestPlayers == null) {
+      try {
+        final status = await _s.starTv.fetchStatus(ip: tv.ip, port: tv.port);
+        latestPlayers = status.installedPlayers;
+      } catch (_) {}
+    }
+
+    if (latestPlayers != null && latestPlayers!.isNotEmpty) {
+      final normalized =
+          latestPlayers!.where((e) => e.trim().isNotEmpty).toList();
+      if (normalized.isNotEmpty &&
+          !listEquals(normalized, tv.installedPlayers)) {
+        final updatedTv = StarTvDevice(
+          tvId: tv.tvId,
+          ip: tv.ip,
+          port: tv.port,
+          deviceName: tv.deviceName,
+          trustMode: tv.trustMode,
+          installedPlayers: normalized,
+          syncApiVersion: tv.syncApiVersion,
+        );
+        await saveStarTvDevice(updatedTv, token);
+      }
+    }
 
     final count = await _s.repo.mergeImportedBundle(
       mergedFromTv,

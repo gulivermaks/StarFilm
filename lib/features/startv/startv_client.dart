@@ -187,6 +187,7 @@ class StarTvClient {
     required Map<String, List<LibraryEntry>> entriesByProfile,
     required Map<String, Map<String, int>> deletedByProfile,
     Map<String, int> deletedProfiles = const {},
+    void Function(List<String> installedPlayers)? onInstalledPlayers,
   }) async {
     if (!device.canSyncLibrary) {
       throw StarTvException('Library sync is blocked in Guest TV mode');
@@ -258,6 +259,16 @@ class StarTvClient {
     }
 
     final decoded = jsonDecode(res.body) as Map<String, dynamic>;
+    final rawPlayers = decoded['installedPlayers'];
+    if (onInstalledPlayers != null && rawPlayers is List && rawPlayers.isNotEmpty) {
+      final parsedPlayers = rawPlayers
+          .map((e) => e.toString().trim())
+          .where((e) => e.isNotEmpty)
+          .toList();
+      if (parsedPlayers.isNotEmpty) {
+        onInstalledPlayers(parsedPlayers);
+      }
+    }
     final profilesObj = decoded['profiles'] ?? decoded;
     return BackupCodec.decodeBackup(jsonEncode({
       'schemaVersion': 1,

@@ -92,4 +92,40 @@ class StarTvQrPayload {
       pin: pin,
     );
   }
+
+  static ({String ip, int port})? tryParseHostPort(
+    String raw, {
+    int defaultPort = 8088,
+  }) {
+    final trimmed = raw.trim();
+    if (trimmed.isEmpty) return null;
+    if (trimmed.contains('://')) {
+      final parsed = Uri.tryParse(trimmed);
+      if (parsed == null || parsed.scheme != 'http' || parsed.host.isEmpty) {
+        return null;
+      }
+      final port = parsed.hasPort ? parsed.port : defaultPort;
+      if (port < 1 || port > 65535) return null;
+      final normalized = Uri(scheme: 'http', host: parsed.host, port: port);
+      if (!LanGuard.isAllowedUri(normalized)) return null;
+      return (ip: parsed.host, port: port);
+    }
+    var host = trimmed;
+    var port = defaultPort;
+    final colonIdx = trimmed.indexOf(':');
+    if (colonIdx != -1) {
+      if (trimmed.indexOf(':', colonIdx + 1) != -1) return null;
+      host = trimmed.substring(0, colonIdx).trim();
+      final portStr = trimmed.substring(colonIdx + 1).trim();
+      final parsedPort = int.tryParse(portStr);
+      if (parsedPort == null || parsedPort < 1 || parsedPort > 65535) {
+        return null;
+      }
+      port = parsedPort;
+    }
+    if (host.isEmpty || !LanGuard.isPrivateRfc1918Ipv4(host)) return null;
+    final normalized = Uri(scheme: 'http', host: host, port: port);
+    if (!LanGuard.isAllowedUri(normalized)) return null;
+    return (ip: host, port: port);
+  }
 }
