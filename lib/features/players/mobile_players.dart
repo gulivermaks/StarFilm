@@ -1,6 +1,7 @@
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../app/l10n.dart';
 import '../../core/models/media_key.dart';
 
 enum MobilePlayerId {
@@ -19,6 +20,13 @@ enum MobilePlayerId {
   final String id;
   final String label;
   final String androidPackage;
+
+  String localizedLabel(AppStrings s) {
+    if (this == MobilePlayerId.webSearch) {
+      return s.t('player_web_search');
+    }
+    return label;
+  }
 
   static MobilePlayerId fromId(String? raw) {
     for (final p in MobilePlayerId.values) {

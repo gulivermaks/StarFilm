@@ -42,6 +42,7 @@ class DiscoveryService {
     required List<LibraryEntry> library,
     required Set<String> recentShownIds,
     required List<String> recentShownLabels,
+    int discoverPage = 1,
   }) async {
     final excludedMediaKeys = <String>{
       for (final e in library)
@@ -50,6 +51,8 @@ class DiscoveryService {
     };
     final excludedGenres = profile.preferences.excludedGenres.toSet();
     final contentLang = profile.preferences.contentLanguage;
+    final maxRuntime = request.maxMinutes ??
+        (request.preset == EveningPreset.under90 ? 90 : null);
 
     final verified = <RecommendationCard>[];
     final addedKeys = <String>{};
@@ -68,16 +71,16 @@ class DiscoveryService {
           recentShownLabels: recentShownLabels,
         );
 
-        // Step 2: Parallel TMDB verification and enrichment.
+        // Step 2: Parallel TMDB verification (omit hard ?year= so +-1 year matcher works).
         final verifiedList = await Future.wait(
           candidates.take(12).map((cand) async {
-            final searchQuery = cand.originalTitle.isNotEmpty ? cand.originalTitle : cand.title;
+            final searchQuery =
+                cand.originalTitle.isNotEmpty ? cand.originalTitle : cand.title;
             final results = await _tmdb.searchTyped(
               apiKey: tmdbApiKey,
               mediaType: cand.mediaType,
               query: searchQuery,
               contentLanguage: contentLang,
-              year: cand.year,
             );
             final matched = TmdbMatcher.pickBestMatch(
               title: cand.title,
@@ -87,31 +90,48 @@ class DiscoveryService {
               results: results,
             );
             if (matched == null) return null;
-            return (cand, matched);
+            int? runtimeMinutes;
+            if (maxRuntime != null && matched.mediaType == MediaType.movie) {
+              runtimeMinutes = await _tmdb.fetchMovieRuntimeMinutes(
+                apiKey: tmdbApiKey,
+                tmdbId: matched.tmdbId,
+              );
+            }
+            return (cand, matched, runtimeMinutes);
           }),
         );
 
-        for (final pair in verifiedList) {
-          if (pair == null) continue;
-          final (cand, matched) = pair;
+        for (final triple in verifiedList) {
+          if (triple == null) continue;
+          final (cand, matched, runtimeMinutes) = triple;
           final key = MediaKey(matched.mediaType, matched.tmdbId).value;
           if (excludedMediaKeys.contains(key) || addedKeys.contains(key)) continue;
           if (matched.genreIds.any(excludedGenres.contains)) continue;
-          if (request.mediaTypeFilter != null && matched.mediaType != request.mediaTypeFilter) {
+          if (request.mediaTypeFilter != null &&
+              matched.mediaType != request.mediaTypeFilter) {
+            continue;
+          }
+          if (maxRuntime != null &&
+              matched.mediaType == MediaType.movie &&
+              runtimeMinutes != null &&
+              runtimeMinutes > maxRuntime) {
             continue;
           }
           addedKeys.add(key);
-          verified.add(RecommendationCard(
-            mediaType: matched.mediaType,
-            tmdbId: matched.tmdbId,
-            title: matched.title,
-            originalTitle: matched.originalTitle,
-            year: matched.year,
-            posterPath: matched.posterPath,
-            genreIds: matched.genreIds,
-            tmdbRating: matched.voteAverage > 0 ? matched.voteAverage : null,
-            reason: cand.reason,
-          ));
+          verified.add(
+            RecommendationCard(
+              mediaType: matched.mediaType,
+              tmdbId: matched.tmdbId,
+              title: matched.title,
+              originalTitle: matched.originalTitle,
+              year: matched.year,
+              posterPath: matched.posterPath,
+              genreIds: matched.genreIds,
+              tmdbRating: matched.voteAverage > 0 ? matched.voteAverage : null,
+              reason: cand.reason,
+              runtimeMinutes: runtimeMinutes,
+            ),
+          );
         }
       } on GeminiQuotaException catch (e) {
         usedFallback = true;
@@ -134,8 +154,7 @@ class DiscoveryService {
           ? [request.mediaTypeFilter!]
           : [MediaType.movie, MediaType.tv];
       final presetGenres = _presetGenres(request.preset);
-      final maxRuntime = request.maxMinutes ??
-          (request.preset == EveningPreset.under90 ? 90 : null);
+      final safePage = discoverPage.clamp(1, 20);
 
       for (final type in targetTypes) {
         if (verified.length >= 8) break;
@@ -149,7 +168,7 @@ class DiscoveryService {
             withoutGenres: excludedGenres.toList(),
             maxRuntimeMinutes: maxRuntime,
             minRating: 6.5,
-            page: request.different ? 2 : 1,
+            page: safePage,
           );
         } catch (e) {
           if (verified.isNotEmpty) {
@@ -164,18 +183,20 @@ class DiscoveryService {
           if (excludedMediaKeys.contains(key) || addedKeys.contains(key)) continue;
           if (item.genreIds.any(excludedGenres.contains)) continue;
           addedKeys.add(key);
-          verified.add(RecommendationCard(
-            mediaType: item.mediaType,
-            tmdbId: item.tmdbId,
-            title: item.title,
-            originalTitle: item.originalTitle,
-            year: item.year,
-            posterPath: item.posterPath,
-            genreIds: item.genreIds,
-            tmdbRating: item.voteAverage > 0 ? item.voteAverage : null,
-            reason: 'TMDB',
-            fromFallback: true,
-          ));
+          verified.add(
+            RecommendationCard(
+              mediaType: item.mediaType,
+              tmdbId: item.tmdbId,
+              title: item.title,
+              originalTitle: item.originalTitle,
+              year: item.year,
+              posterPath: item.posterPath,
+              genreIds: item.genreIds,
+              tmdbRating: item.voteAverage > 0 ? item.voteAverage : null,
+              reason: 'TMDB',
+              fromFallback: true,
+            ),
+          );
         }
       }
     }

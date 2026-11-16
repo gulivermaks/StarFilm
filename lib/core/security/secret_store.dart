@@ -12,7 +12,10 @@ class SecretStore {
   SecretStore({FlutterSecureStorage? storage})
       : _storage = storage ??
             const FlutterSecureStorage(
-              aOptions: AndroidOptions(encryptedSharedPreferences: true),
+              aOptions: AndroidOptions(
+                encryptedSharedPreferences: true,
+                resetOnError: true,
+              ),
             );
 
   final FlutterSecureStorage _storage;
@@ -24,42 +27,66 @@ class SecretStore {
   static const String _starTvDevicesKey = 'starfilm.startv_devices';
   static const String _starTvTokenPrefix = 'starfilm.startv_token.';
 
-  Future<String> getTmdbKey() async => (await _storage.read(key: _tmdbKey)) ?? '';
-  Future<void> setTmdbKey(String value) =>
-      _storage.write(key: _tmdbKey, value: value.trim());
-
-  Future<String> getGeminiKey() async => (await _storage.read(key: _geminiKey)) ?? '';
-  Future<void> setGeminiKey(String value) =>
-      _storage.write(key: _geminiKey, value: value.trim());
-
-  Future<String> getKinopoiskKey() async {
+  Future<String?> _safeRead(String key) async {
     try {
-      return (await _storage.read(key: _kinopoiskKey)) ?? '';
+      return await _storage.read(key: key);
     } on MissingPluginException {
-      return '';
+      return null;
+    } on PlatformException {
+      // EncryptedSharedPreferences can fail after device migration or keystore reset;
+      // discard only the unreadable entry so app startup never blocks.
+      try {
+        await _storage.delete(key: key);
+      } catch (_) {}
+      return null;
     }
   }
 
-  Future<void> setKinopoiskKey(String value) async {
+  Future<void> _safeWrite(String key, String value) async {
     try {
-      await _storage.write(key: _kinopoiskKey, value: value.trim());
+      await _storage.write(key: key, value: value);
     } on MissingPluginException {
-      // Allow legacy test SecretStore fakes to omit Kinopoisk overrides.
+      // Allow test fakes without full channel support.
+    } on PlatformException {
+      try {
+        await _storage.delete(key: key);
+        await _storage.write(key: key, value: value);
+      } catch (_) {}
     }
   }
+
+  Future<void> _safeDelete(String key) async {
+    try {
+      await _storage.delete(key: key);
+    } on MissingPluginException {
+      // No-op in headless tests.
+    } on PlatformException {
+      // Ignore delete failures on corrupted keystore entries.
+    }
+  }
+
+  Future<String> getTmdbKey() async => (await _safeRead(_tmdbKey)) ?? '';
+  Future<void> setTmdbKey(String value) => _safeWrite(_tmdbKey, value.trim());
+
+  Future<String> getGeminiKey() async => (await _safeRead(_geminiKey)) ?? '';
+  Future<void> setGeminiKey(String value) => _safeWrite(_geminiKey, value.trim());
+
+  Future<String> getKinopoiskKey() async => (await _safeRead(_kinopoiskKey)) ?? '';
+  Future<void> setKinopoiskKey(String value) =>
+      _safeWrite(_kinopoiskKey, value.trim());
 
   Future<String> getOrCreateDeviceId() async {
-    final existing = await _storage.read(key: _deviceIdKey);
+    final existing = await _safeRead(_deviceIdKey);
     if (existing != null && existing.isNotEmpty) return existing;
     final rng = Random.secure();
     final hex = List.generate(16, (_) => rng.nextInt(256).toRadixString(16).padLeft(2, '0'))
         .join();
-    await _storage.write(key: _deviceIdKey, value: hex);
+    await _safeWrite(_deviceIdKey, hex);
     return hex;
   }
 
   Future<List<StarTvDevice>> loadStarTvDevices() async {
-    final raw = await _storage.read(key: _starTvDevicesKey);
+    final raw = await _safeRead(_starTvDevicesKey);
     if (raw == null || raw.isEmpty) return const [];
     try {
       final list = jsonDecode(raw) as List<dynamic>;
@@ -78,28 +105,28 @@ class SecretStore {
     existing.removeWhere((d) =>
         (device.tvId.isNotEmpty && d.tvId == device.tvId) || d.ip == device.ip);
     existing.insert(0, device);
-    await _storage.write(
-      key: _starTvDevicesKey,
-      value: jsonEncode(existing.map((d) => d.toJson()).toList()),
+    await _safeWrite(
+      _starTvDevicesKey,
+      jsonEncode(existing.map((d) => d.toJson()).toList()),
     );
     final keySuffix = device.tvId.isNotEmpty ? device.tvId : device.ip;
-    await _storage.write(key: '$_starTvTokenPrefix$keySuffix', value: bearerToken);
+    await _safeWrite('$_starTvTokenPrefix$keySuffix', bearerToken);
   }
 
   Future<String?> getStarTvToken(StarTvDevice device) async {
     final keySuffix = device.tvId.isNotEmpty ? device.tvId : device.ip;
-    return _storage.read(key: '$_starTvTokenPrefix$keySuffix');
+    return _safeRead('$_starTvTokenPrefix$keySuffix');
   }
 
   Future<void> removeStarTvDevice(StarTvDevice device) async {
     final existing = (await loadStarTvDevices()).toList();
     existing.removeWhere((d) =>
         (device.tvId.isNotEmpty && d.tvId == device.tvId) || d.ip == device.ip);
-    await _storage.write(
-      key: _starTvDevicesKey,
-      value: jsonEncode(existing.map((d) => d.toJson()).toList()),
+    await _safeWrite(
+      _starTvDevicesKey,
+      jsonEncode(existing.map((d) => d.toJson()).toList()),
     );
     final keySuffix = device.tvId.isNotEmpty ? device.tvId : device.ip;
-    await _storage.delete(key: '$_starTvTokenPrefix$keySuffix');
+    await _safeDelete('$_starTvTokenPrefix$keySuffix');
   }
 }

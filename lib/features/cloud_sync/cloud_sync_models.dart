@@ -12,6 +12,27 @@ enum SyncStatusState {
   error,
 }
 
+enum SignInMergeChoice {
+  mergeLocalWithCloud,
+  replaceLocalWithCloud,
+  cancel,
+}
+
+class LocalLibrarySummary {
+  const LocalLibrarySummary({
+    required this.extraProfilesCount,
+    required this.entriesCount,
+    required this.collectionsCount,
+  });
+
+  final int extraProfilesCount;
+  final int entriesCount;
+  final int collectionsCount;
+
+  bool get hasData =>
+      extraProfilesCount > 0 || entriesCount > 0 || collectionsCount > 0;
+}
+
 class SyncResultSummary {
   const SyncResultSummary({
     required this.state,
@@ -24,6 +45,78 @@ class SyncResultSummary {
   final int pushedCount;
   final int pulledCount;
   final String message;
+}
+
+enum CloudEntityType { profile, library, collection }
+
+class CloudWriteOp {
+  const CloudWriteOp({
+    required this.entityType,
+    required this.profileId,
+    required this.docId,
+    required this.clientUpdatedAt,
+    required this.data,
+  });
+
+  final CloudEntityType entityType;
+  final String profileId;
+  final String docId;
+  final int clientUpdatedAt;
+  final Map<String, dynamic> data;
+}
+
+class CloudPulledProfile {
+  const CloudPulledProfile({
+    required this.profile,
+    required this.serverSyncedAtMs,
+  });
+
+  final UserProfile profile;
+  final int serverSyncedAtMs;
+}
+
+class CloudPulledLibraryDoc {
+  const CloudPulledLibraryDoc({
+    required this.docId,
+    required this.entry,
+    required this.serverSyncedAtMs,
+  });
+
+  final String docId;
+  final LibraryEntry entry;
+  final int serverSyncedAtMs;
+}
+
+class CloudPulledCollectionDoc {
+  const CloudPulledCollectionDoc({
+    required this.collection,
+    required this.serverSyncedAtMs,
+  });
+
+  final UserCollection collection;
+  final int serverSyncedAtMs;
+}
+
+abstract interface class CloudSyncBackend {
+  Object get serverTimestampSentinel;
+
+  Future<void> ensureUserDoc(String uid);
+
+  Future<void> commitWrites(String uid, List<CloudWriteOp> writes);
+
+  Future<List<CloudPulledProfile>> fetchProfiles(String uid);
+
+  Future<List<CloudPulledLibraryDoc>> fetchLibrarySince(
+    String uid,
+    String profileId,
+    int lastServerCursorMs,
+  );
+
+  Future<List<CloudPulledCollectionDoc>> fetchCollectionsSince(
+    String uid,
+    String profileId,
+    int lastServerCursorMs,
+  );
 }
 
 /// Splits Firestore write batches to stay safely below the hard 500-op Firestore limit.

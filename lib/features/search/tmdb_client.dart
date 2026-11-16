@@ -248,12 +248,10 @@ class TmdbClient {
       if (gname.isNotEmpty) genres.add(gname);
     }
 
-    final countries = (primaryData['production_countries'] as List<dynamic>? ?? const [])
-        .whereType<Map<String, dynamic>>()
-        .map((c) => (c['name'] ?? c['iso_3166_1'] ?? '').toString().trim())
-        .where((s) => s.isNotEmpty)
-        .take(3)
-        .toList();
+    final countries = _localizeCountries(
+      primaryData['production_countries'] as List<dynamic>? ?? const [],
+      contentLanguage,
+    );
 
     final directors = <String>[];
     if (mediaType == MediaType.tv) {
@@ -323,6 +321,122 @@ class TmdbClient {
       youtubeTrailerKey: trailerKey,
     );
   }
+
+  Future<int?> fetchMovieRuntimeMinutes({
+    required String apiKey,
+    required int tmdbId,
+  }) async {
+    final key = _normalizeToken(apiKey);
+    if (key.isEmpty || tmdbId <= 0) return null;
+    try {
+      final res = await _get(key, '/3/movie/$tmdbId');
+      if (!res.isOk) return null;
+      final decoded = jsonDecode(res.body);
+      if (decoded is! Map<String, dynamic>) return null;
+      final runtime = decoded['runtime'];
+      if (runtime is num && runtime > 0) return runtime.toInt();
+    } catch (_) {}
+    return null;
+  }
+
+  static List<String> _localizeCountries(
+    List<dynamic> rawCountries,
+    String contentLanguage,
+  ) {
+    final lang = contentLanguage.toLowerCase();
+    final map = lang == 'ru'
+        ? _countryNamesRu
+        : (lang == 'uk' ? _countryNamesUk : const <String, String>{});
+    return rawCountries
+        .whereType<Map<String, dynamic>>()
+        .map((c) {
+          final iso = (c['iso_3166_1'] ?? '').toString().trim().toUpperCase();
+          final localized = map[iso];
+          if (localized != null && localized.isNotEmpty) return localized;
+          return (c['name'] ?? iso).toString().trim();
+        })
+        .where((s) => s.isNotEmpty)
+        .take(3)
+        .toList();
+  }
+
+  static const Map<String, String> _countryNamesRu = {
+    'US': 'США',
+    'GB': 'Великобритания',
+    'UA': 'Украина',
+    'RU': 'Россия',
+    'FR': 'Франция',
+    'DE': 'Германия',
+    'JP': 'Япония',
+    'KR': 'Южная Корея',
+    'CA': 'Канада',
+    'IT': 'Италия',
+    'ES': 'Испания',
+    'PL': 'Польша',
+    'AU': 'Австралия',
+    'CN': 'Китай',
+    'HK': 'Гонконг',
+    'TW': 'Тайвань',
+    'IN': 'Индия',
+    'SE': 'Швеция',
+    'DK': 'Дания',
+    'NO': 'Норвегия',
+    'FI': 'Финляндия',
+    'NL': 'Нидерланды',
+    'BE': 'Бельгия',
+    'CH': 'Швейцария',
+    'AT': 'Австрия',
+    'CZ': 'Чехия',
+    'HU': 'Венгрия',
+    'BR': 'Бразилия',
+    'MX': 'Мексика',
+    'AR': 'Аргентина',
+    'NZ': 'Новая Зеландия',
+    'IE': 'Ирландия',
+    'IL': 'Израиль',
+    'TR': 'Турция',
+    'TH': 'Таиланд',
+    'ID': 'Индонезия',
+  };
+
+  static const Map<String, String> _countryNamesUk = {
+    'US': 'США',
+    'GB': 'Велика Британія',
+    'UA': 'Україна',
+    'RU': 'Росія',
+    'FR': 'Франція',
+    'DE': 'Німеччина',
+    'JP': 'Японія',
+    'KR': 'Південна Корея',
+    'CA': 'Канада',
+    'IT': 'Італія',
+    'ES': 'Іспанія',
+    'PL': 'Польща',
+    'AU': 'Австралія',
+    'CN': 'Китай',
+    'HK': 'Гонконг',
+    'TW': 'Тайвань',
+    'IN': 'Індія',
+    'SE': 'Швеція',
+    'DK': 'Данія',
+    'NO': 'Норвегія',
+    'FI': 'Фінляндія',
+    'NL': 'Нідерланди',
+    'BE': 'Бельгія',
+    'CH': 'Швейцарія',
+    'AT': 'Австрія',
+    'CZ': 'Чехія',
+    'HU': 'Угорщина',
+    'BR': 'Бразилія',
+    'MX': 'Мексика',
+    'AR': 'Аргентина',
+    'NZ': 'Нова Зеландія',
+    'IE': 'Ірландія',
+    'IL': 'Ізраїль',
+    'TR': 'Туреччина',
+    'TH': 'Таїланд',
+    'ID': 'Індонезія',
+  };
 
   /// Queries TMDB `/3/movie/{id}/release_dates` for a movie's digital release
   /// date (`type == 4`). Strictly for movies only; series have no movie digital release.

@@ -5,36 +5,77 @@ service cloud.firestore {
       return request.auth != null && request.auth.uid == userId;
     }
 
+    function validPreferences(prefs) {
+      return prefs is map
+        && prefs.keys().hasOnly(['excludedGenres', 'favoriteGenres', 'contentLanguage', 'personalized'])
+        && (!('excludedGenres' in prefs) || (prefs.excludedGenres is list && prefs.excludedGenres.size() <= 19))
+        && (!('favoriteGenres' in prefs) || (prefs.favoriteGenres is list && prefs.favoriteGenres.size() <= 19))
+        && (!('contentLanguage' in prefs) || prefs.contentLanguage in ['uk', 'ru', 'en'])
+        && (!('personalized' in prefs) || prefs.personalized is bool);
+    }
+
     match /users/{userId} {
       allow read: if isOwner(userId);
       allow create, update: if isOwner(userId)
-        && request.resource.data.keys().size() <= 10;
+        && request.resource.data.keys().hasOnly(['schemaVersion', 'updatedAt'])
+        && (!('schemaVersion' in request.resource.data) || request.resource.data.schemaVersion is int);
+      allow delete: if isOwner(userId);
 
       match /profiles/{profileId} {
         allow read: if isOwner(userId);
-        allow write: if isOwner(userId)
+        allow create, update: if isOwner(userId)
           && profileId.matches('^(main|p_[a-z0-9]{4,16})$')
-          && (!('name' in request.resource.data) || (request.resource.data.name is string && request.resource.data.name.size() >= 1 && request.resource.data.name.size() <= 24));
+          && request.resource.data.keys().hasOnly([
+            'name', 'preferences', 'clientUpdatedAt', 'serverSyncedAt', 'deletedAt'
+          ])
+          && (!('name' in request.resource.data) || (request.resource.data.name is string && request.resource.data.name.size() >= 1 && request.resource.data.name.size() <= 24))
+          && (!('preferences' in request.resource.data) || validPreferences(request.resource.data.preferences))
+          && (!('clientUpdatedAt' in request.resource.data) || request.resource.data.clientUpdatedAt is int)
+          && (!('deletedAt' in request.resource.data) || request.resource.data.deletedAt == null || request.resource.data.deletedAt is int);
+        allow delete: if isOwner(userId);
 
         match /library/{itemKey} {
           allow read: if isOwner(userId);
-          allow write: if isOwner(userId)
+          allow create, update: if isOwner(userId)
             && itemKey.matches('^(movie|tv)_[0-9]{1,10}$')
-            && request.resource.data.keys().size() <= 20
+            && request.resource.data.keys().hasOnly([
+              'mediaType', 'tmdbId', 'title', 'originalTitle', 'year', 'posterPath',
+              'genreIds', 'status', 'userRating', 'sentiment',
+              'statusChangedAt', 'ratingChangedAt', 'sentimentChangedAt',
+              'clientUpdatedAt', 'serverSyncedAt', 'deletedAt', 'updatedByDevice'
+            ])
             && (!('mediaType' in request.resource.data) || request.resource.data.mediaType in ['movie', 'tv'])
-            && (!('status' in request.resource.data) || request.resource.data.status in ['none', 'watchlist', 'watching', 'watched', 'dismissed'])
-            && (!('sentiment' in request.resource.data) || request.resource.data.sentiment in ['neutral', 'liked', 'disliked'])
+            && (!('tmdbId' in request.resource.data) || (request.resource.data.tmdbId is int && request.resource.data.tmdbId > 0))
             && (!('title' in request.resource.data) || (request.resource.data.title is string && request.resource.data.title.size() <= 200))
             && (!('originalTitle' in request.resource.data) || (request.resource.data.originalTitle is string && request.resource.data.originalTitle.size() <= 200))
-            && (!('posterPath' in request.resource.data) || (request.resource.data.posterPath is string && request.resource.data.posterPath.size() <= 160));
+            && (!('year' in request.resource.data) || request.resource.data.year == null || (request.resource.data.year is int && request.resource.data.year >= 1880 && request.resource.data.year <= 2100))
+            && (!('posterPath' in request.resource.data) || (request.resource.data.posterPath is string && request.resource.data.posterPath.size() <= 160))
+            && (!('genreIds' in request.resource.data) || (request.resource.data.genreIds is list && request.resource.data.genreIds.size() <= 30))
+            && (!('status' in request.resource.data) || request.resource.data.status in ['none', 'watchlist', 'watching', 'watched', 'dismissed'])
+            && (!('userRating' in request.resource.data) || request.resource.data.userRating == null || (request.resource.data.userRating is int && request.resource.data.userRating >= 1 && request.resource.data.userRating <= 10))
+            && (!('sentiment' in request.resource.data) || request.resource.data.sentiment in ['neutral', 'liked', 'disliked'])
+            && (!('statusChangedAt' in request.resource.data) || request.resource.data.statusChangedAt is int)
+            && (!('ratingChangedAt' in request.resource.data) || request.resource.data.ratingChangedAt is int)
+            && (!('sentimentChangedAt' in request.resource.data) || request.resource.data.sentimentChangedAt is int)
+            && (!('clientUpdatedAt' in request.resource.data) || request.resource.data.clientUpdatedAt is int)
+            && (!('deletedAt' in request.resource.data) || request.resource.data.deletedAt == null || request.resource.data.deletedAt is int)
+            && (!('updatedByDevice' in request.resource.data) || (request.resource.data.updatedByDevice is string && request.resource.data.updatedByDevice.size() <= 64));
+          allow delete: if isOwner(userId);
         }
 
         match /collections/{collectionId} {
           allow read: if isOwner(userId);
-          allow write: if isOwner(userId)
+          allow create, update: if isOwner(userId)
+            && collectionId.size() >= 1
             && collectionId.size() <= 48
+            && request.resource.data.keys().hasOnly([
+              'title', 'mediaKeys', 'clientUpdatedAt', 'serverSyncedAt', 'deletedAt'
+            ])
             && (!('title' in request.resource.data) || (request.resource.data.title is string && request.resource.data.title.size() <= 60))
-            && (!('mediaKeys' in request.resource.data) || (request.resource.data.mediaKeys is list && request.resource.data.mediaKeys.size() <= 500));
+            && (!('mediaKeys' in request.resource.data) || (request.resource.data.mediaKeys is list && request.resource.data.mediaKeys.size() <= 500))
+            && (!('clientUpdatedAt' in request.resource.data) || request.resource.data.clientUpdatedAt is int)
+            && (!('deletedAt' in request.resource.data) || request.resource.data.deletedAt == null || request.resource.data.deletedAt is int);
+          allow delete: if isOwner(userId);
         }
       }
     }

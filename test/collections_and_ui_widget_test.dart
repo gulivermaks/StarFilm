@@ -248,10 +248,12 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Топ список'), findsOneWidget);
 
-    // Open menu -> delete collection.
+    // Open menu -> delete collection -> confirm dialog.
     await tester.tap(find.byType(PopupMenuButton<String>));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Видалити'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Видалити').last);
     await tester.pumpAndSettle();
     expect(find.text('Топ список'), findsNothing);
   });

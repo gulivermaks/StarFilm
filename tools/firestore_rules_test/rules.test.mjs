@@ -7,7 +7,7 @@ import {
   assertSucceeds,
   assertFails,
 } from '@firebase/rules-unit-testing';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { doc, getDoc, setDoc, deleteDoc } from 'firebase/firestore';
 
 const projectId = 'starfilm-rules-test';
 let testEnv;
@@ -105,4 +105,43 @@ test('rules reject invalid profileId, invalid itemKey, oversized title, and inva
       status: 'episode_progress',
     }),
   );
+  await assertFails(
+    setDoc(doc(aliceDb, 'users/alice/profiles/main/library/movie_125'), {
+      mediaType: 'movie',
+      tmdbId: 125,
+      title: 'Overrated',
+      userRating: 11,
+    }),
+  );
+  await assertFails(
+    setDoc(doc(aliceDb, 'users/alice/profiles/main/library/movie_126'), {
+      mediaType: 'movie',
+      tmdbId: 126,
+      title: 'Forbidden extra field',
+      progressNote: 'S01E02',
+    }),
+  );
+  await assertFails(
+    setDoc(doc(aliceDb, 'users/alice/profiles/main/library/movie_0'), {
+      mediaType: 'movie',
+      tmdbId: 0,
+      title: 'Zero tmdbId',
+    }),
+  );
+});
+
+test('owner can delete own doc, while others cannot', async () => {
+  const aliceDb = testEnv.authenticatedContext('alice').firestore();
+  const bobDb = testEnv.authenticatedContext('bob').firestore();
+  const refAlice = doc(aliceDb, 'users/alice/profiles/main/library/movie_777');
+  await assertSucceeds(
+    setDoc(refAlice, {
+      mediaType: 'movie',
+      tmdbId: 777,
+      title: 'Deletable',
+      userRating: null,
+    }),
+  );
+  await assertFails(deleteDoc(doc(bobDb, 'users/alice/profiles/main/library/movie_777')));
+  await assertSucceeds(deleteDoc(refAlice));
 });

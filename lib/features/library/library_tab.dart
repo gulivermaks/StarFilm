@@ -37,20 +37,17 @@ class _LibraryTabState extends ConsumerState<LibraryTab> {
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
           child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: Row(
-                  children: [
-                    _tabChip(_LibrarySection.watchlist, s.t('status_watchlist')),
-                    const SizedBox(width: 8),
-                    _tabChip(_LibrarySection.watching, s.t('status_watching')),
-                    const SizedBox(width: 8),
-                    _tabChip(_LibrarySection.watched, s.t('status_watched')),
-                    const SizedBox(width: 8),
-                    _tabChip(_LibrarySection.collections, s.t('collections')),
-                  ],
-                ),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _tabChip(_LibrarySection.watchlist, s.t('status_watchlist')),
+                  _tabChip(_LibrarySection.watching, s.t('status_watching')),
+                  _tabChip(_LibrarySection.watched, s.t('status_watched')),
+                  _tabChip(_LibrarySection.collections, s.t('collections')),
+                ],
               ),
               if (_section != _LibrarySection.collections) ...[
                 const SizedBox(height: 10),
@@ -58,7 +55,8 @@ class _LibraryTabState extends ConsumerState<LibraryTab> {
                   children: [
                     Expanded(
                       child: TextField(
-                        onChanged: (v) => setState(() => _searchQuery = v.trim().toLowerCase()),
+                        onChanged: (v) =>
+                            setState(() => _searchQuery = v.trim().toLowerCase()),
                         decoration: InputDecoration(
                           hintText: s.t('library_search_hint'),
                           prefixIcon: const Icon(Icons.search),
@@ -94,8 +92,10 @@ class _LibraryTabState extends ConsumerState<LibraryTab> {
                       onSelected: (v) => setState(() => _typeFilter = v),
                       itemBuilder: (_) => [
                         PopupMenuItem(value: null, child: Text(s.t('type_all'))),
-                        PopupMenuItem(value: MediaType.movie, child: Text(s.t('type_movie'))),
-                        PopupMenuItem(value: MediaType.tv, child: Text(s.t('type_tv'))),
+                        PopupMenuItem(
+                            value: MediaType.movie, child: Text(s.t('type_movie'))),
+                        PopupMenuItem(
+                            value: MediaType.tv, child: Text(s.t('type_tv'))),
                       ],
                     ),
                   ],
@@ -118,6 +118,29 @@ class _LibraryTabState extends ConsumerState<LibraryTab> {
       label: Text(label),
       selected: _section == section,
       onSelected: (_) => setState(() => _section = section),
+    );
+  }
+
+  Future<void> _removeWithUndo(
+    BuildContext context,
+    AppStrings s,
+    LibraryEntry entry,
+  ) async {
+    final notifier = ref.read(appControllerProvider.notifier);
+    await notifier.removeEntry(entry.mediaKey);
+    if (!context.mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.hideCurrentSnackBar();
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(s.t('entry_removed_undo', {'title': entry.title})),
+        action: SnackBarAction(
+          label: s.t('undo'),
+          onPressed: () {
+            notifier.restoreDeletedEntry(entry);
+          },
+        ),
+      ),
     );
   }
 
@@ -195,8 +218,7 @@ class _LibraryTabState extends ConsumerState<LibraryTab> {
             ),
             trailing: IconButton(
               icon: const Icon(Icons.delete_outline, color: StarFilmColors.textSecondary),
-              onPressed: () =>
-                  ref.read(appControllerProvider.notifier).removeEntry(entry.mediaKey),
+              onPressed: () => _removeWithUndo(context, s, entry),
             ),
             onTap: () => MediaDetailsSheet.show(
               context,
@@ -246,15 +268,20 @@ class _LibraryTabState extends ConsumerState<LibraryTab> {
               margin: const EdgeInsets.only(bottom: 10),
               clipBehavior: Clip.antiAlias,
               child: ExpansionTile(
-                leading: const Icon(Icons.folder_special_outlined, color: StarFilmColors.lime),
+                leading: const Icon(
+                  Icons.folder_special_outlined,
+                  color: StarFilmColors.lime,
+                ),
                 title: Text(col.title, style: const TextStyle(fontWeight: FontWeight.w600)),
-                subtitle: Text(s.t('collection_items_count', {'n': col.mediaKeys.length})),
+                subtitle: Text(
+                  s.t('collection_items_count', {'n': col.mediaKeys.length}),
+                ),
                 trailing: PopupMenuButton<String>(
                   onSelected: (action) async {
                     if (action == 'rename') {
                       await _renameCollectionDialog(context, s, col);
                     } else if (action == 'delete') {
-                      await ref.read(appControllerProvider.notifier).deleteCollection(col);
+                      await _confirmDeleteCollection(context, s, col);
                     }
                   },
                   itemBuilder: (_) => [
@@ -276,7 +303,13 @@ class _LibraryTabState extends ConsumerState<LibraryTab> {
                     )
                   else
                     for (final keyStr in col.mediaKeys)
-                      _buildCollectionMemberTile(context, s, col, keyStr, entriesByKey[keyStr]),
+                      _buildCollectionMemberTile(
+                        context,
+                        s,
+                        col,
+                        keyStr,
+                        entriesByKey[keyStr],
+                      ),
                 ],
               ),
             ),
@@ -318,8 +351,9 @@ class _LibraryTabState extends ConsumerState<LibraryTab> {
         trailing: IconButton(
           tooltip: s.t('remove_from_collection'),
           icon: const Icon(Icons.close),
-          onPressed: () =>
-              ref.read(appControllerProvider.notifier).toggleItemInCollection(col, entry.mediaKey),
+          onPressed: () => ref
+              .read(appControllerProvider.notifier)
+              .toggleItemInCollection(col, entry.mediaKey),
         ),
         onTap: () => MediaDetailsSheet.show(
           context,
@@ -343,10 +377,39 @@ class _LibraryTabState extends ConsumerState<LibraryTab> {
           : IconButton(
               tooltip: s.t('remove_from_collection'),
               icon: const Icon(Icons.close),
-              onPressed: () =>
-                  ref.read(appControllerProvider.notifier).toggleItemInCollection(col, parsed),
+              onPressed: () => ref
+                  .read(appControllerProvider.notifier)
+                  .toggleItemInCollection(col, parsed),
             ),
     );
+  }
+
+  Future<void> _confirmDeleteCollection(
+    BuildContext context,
+    AppStrings s,
+    UserCollection col,
+  ) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: StarFilmColors.surface,
+        title: Text(s.t('delete_collection_confirm_title')),
+        content: Text(s.t('delete_collection_confirm_body', {'name': col.title})),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text(s.t('cancel')),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(s.t('delete')),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      await ref.read(appControllerProvider.notifier).deleteCollection(col);
+    }
   }
 
   Future<String?> _promptCollectionTitle(
@@ -355,24 +418,14 @@ class _LibraryTabState extends ConsumerState<LibraryTab> {
     required String dialogTitle,
     String initialValue = '',
   }) {
-    final ctrl = TextEditingController(text: initialValue);
     return showDialog<String>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: StarFilmColors.surface,
-        title: Text(dialogTitle),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          decoration: InputDecoration(hintText: s.t('collection_name')),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: Text(s.t('cancel'))),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, ctrl.text),
-            child: Text(s.t('ok')),
-          ),
-        ],
+      builder: (_) => _CollectionTitleDialog(
+        dialogTitle: dialogTitle,
+        hintText: s.t('collection_name'),
+        cancelLabel: s.t('cancel'),
+        okLabel: s.t('ok'),
+        initialValue: initialValue,
       ),
     );
   }
@@ -402,5 +455,58 @@ class _LibraryTabState extends ConsumerState<LibraryTab> {
     if (next != null && next.trim().isNotEmpty) {
       await ref.read(appControllerProvider.notifier).renameCollection(col, next);
     }
+  }
+}
+
+class _CollectionTitleDialog extends StatefulWidget {
+  const _CollectionTitleDialog({
+    required this.dialogTitle,
+    required this.hintText,
+    required this.cancelLabel,
+    required this.okLabel,
+    this.initialValue = '',
+  });
+
+  final String dialogTitle;
+  final String hintText;
+  final String cancelLabel;
+  final String okLabel;
+  final String initialValue;
+
+  @override
+  State<_CollectionTitleDialog> createState() => _CollectionTitleDialogState();
+}
+
+class _CollectionTitleDialogState extends State<_CollectionTitleDialog> {
+  late final TextEditingController _ctrl =
+      TextEditingController(text: widget.initialValue);
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: StarFilmColors.surface,
+      title: Text(widget.dialogTitle),
+      content: TextField(
+        controller: _ctrl,
+        autofocus: true,
+        decoration: InputDecoration(hintText: widget.hintText),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: Text(widget.cancelLabel),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, _ctrl.text),
+          child: Text(widget.okLabel),
+        ),
+      ],
+    );
   }
 }

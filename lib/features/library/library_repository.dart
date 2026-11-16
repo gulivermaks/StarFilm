@@ -7,6 +7,7 @@ import '../../core/db/app_database.dart';
 import '../../core/models/library_entry.dart';
 import '../../core/models/media_key.dart';
 import '../../core/models/profile.dart';
+import '../cloud_sync/cloud_sync_models.dart';
 import 'backup_codec.dart';
 
 class LibraryRepository {
@@ -28,6 +29,13 @@ class LibraryRepository {
           ),
           mode: InsertMode.insertOrIgnore,
         );
+    await _enqueueChange(
+      accountUid: '',
+      entityType: 'profile',
+      profileId: 'main',
+      entityKey: 'main',
+      nowMs: ts,
+    );
   }
 
   Future<List<UserProfile>> listProfiles({bool includeDeleted = false}) async {
@@ -58,9 +66,30 @@ class LibraryRepository {
     return out;
   }
 
+  Future<UserProfile?> findProfile(String profileId) async {
+    final row = await (_db.select(_db.profilesTable)
+          ..where((t) => t.id.equals(profileId)))
+        .getSingleOrNull();
+    if (row == null) return null;
+    return UserProfile(
+      id: row.id,
+      name: row.name,
+      preferences: ProfilePreferences.fromJson({
+        'excludedGenres': AppDatabase.decodeIntList(row.excludedGenresJson),
+        'favoriteGenres': AppDatabase.decodeIntList(row.favoriteGenresJson),
+        'contentLanguage': row.contentLanguage,
+        'personalized': row.personalized,
+      }),
+      clientUpdatedAt: row.clientUpdatedAt,
+      serverSyncedAt: row.serverSyncedAt,
+      deletedAt: row.deletedAt,
+    );
+  }
+
   Future<UserProfile> createProfile(
     String name, {
     String accountUid = '',
+    String contentLanguage = 'uk',
     int? nowMs,
   }) async {
     final active = await listProfiles();
@@ -71,7 +100,14 @@ class LibraryRepository {
     final suffix = List.generate(8, (_) => rng.nextInt(36).toRadixString(36)).join();
     final id = 'p_$suffix';
     final ts = nowMs ?? DateTime.now().millisecondsSinceEpoch;
-    final profile = UserProfile(id: id, name: name, clientUpdatedAt: ts);
+    final profile = UserProfile(
+      id: id,
+      name: name,
+      preferences: ProfilePreferences(
+        contentLanguage: ProfilePreferences.normalizeContentLanguage(contentLanguage),
+      ),
+      clientUpdatedAt: ts,
+    );
     await saveProfile(profile, accountUid: accountUid);
     return profile;
   }
@@ -320,9 +356,16 @@ class LibraryRepository {
         }
       }
 
-      // Merge collections
+      // Merge collections by clientUpdatedAt
+      final existingCols = {
+        for (final c in await listCollections(pBundle.profile.id, includeDeleted: true))
+          c.id: c,
+      };
       for (final col in pBundle.collections) {
-        await saveCollection(col, accountUid: accountUid, queueSync: queueSync);
+        final existingCol = existingCols[col.id];
+        if (existingCol == null || col.clientUpdatedAt > existingCol.clientUpdatedAt) {
+          await saveCollection(col, accountUid: accountUid, queueSync: queueSync);
+        }
       }
     }
     return mergedCount;
@@ -522,6 +565,22 @@ class LibraryRepository {
         .toList();
   }
 
+  Future<UserCollection?> findCollection(String profileId, String collectionId) async {
+    final row = await (_db.select(_db.collectionsTable)
+          ..where((t) => t.profileId.equals(profileId) & t.id.equals(collectionId)))
+        .getSingleOrNull();
+    if (row == null) return null;
+    return UserCollection(
+      id: row.id,
+      profileId: row.profileId,
+      title: row.title,
+      mediaKeys: AppDatabase.decodeStringList(row.mediaKeysJson),
+      clientUpdatedAt: row.clientUpdatedAt,
+      serverSyncedAt: row.serverSyncedAt,
+      deletedAt: row.deletedAt,
+    );
+  }
+
   Future<void> saveCollection(
     UserCollection col, {
     String accountUid = '',
@@ -558,8 +617,115 @@ class LibraryRepository {
     return rows.length;
   }
 
-  Future<void> clearAllLocalUserCloudState() async {
+  Future<List<PendingChangesTableData>> listPendingChanges() async {
+    final query = _db.select(_db.pendingChangesTable)
+      ..orderBy([(t) => OrderingTerm.asc(t.id)]);
+    return query.get();
+  }
+
+  Future<void> deletePendingChangesByIds(List<int> ids) async {
+    if (ids.isEmpty) return;
+    const chunkSize = 200;
+    for (var i = 0; i < ids.length; i += chunkSize) {
+      final end = (i + chunkSize < ids.length) ? i + chunkSize : ids.length;
+      final chunk = ids.sublist(i, end);
+      await (_db.delete(_db.pendingChangesTable)
+            ..where((t) => t.id.isIn(chunk)))
+          .go();
+    }
+  }
+
+  Future<void> clearPendingChanges() async {
     await _db.delete(_db.pendingChangesTable).go();
+  }
+
+  Future<void> enqueueAllForSync({String accountUid = '', int? nowMs}) async {
+    final ts = nowMs ?? DateTime.now().millisecondsSinceEpoch;
+    final profiles = await listProfiles(includeDeleted: true);
+    for (final p in profiles) {
+      await _enqueueChange(
+        accountUid: accountUid,
+        entityType: 'profile',
+        profileId: p.id,
+        entityKey: p.id,
+        nowMs: p.clientUpdatedAt > 0 ? p.clientUpdatedAt : ts,
+      );
+      final entries = await listEntries(p.id, includeDeleted: true);
+      for (final e in entries) {
+        await _enqueueChange(
+          accountUid: accountUid,
+          entityType: 'library',
+          profileId: p.id,
+          entityKey: e.firestoreId,
+          nowMs: e.clientUpdatedAt > 0 ? e.clientUpdatedAt : ts,
+        );
+      }
+      final cols = await listCollections(p.id, includeDeleted: true);
+      for (final c in cols) {
+        await _enqueueChange(
+          accountUid: accountUid,
+          entityType: 'collection',
+          profileId: p.id,
+          entityKey: c.id,
+          nowMs: c.clientUpdatedAt > 0 ? c.clientUpdatedAt : ts,
+        );
+      }
+    }
+  }
+
+  Future<LocalLibrarySummary> getLocalDataSummary() async {
+    final profiles = await listProfiles(includeDeleted: false);
+    final extraProfilesCount = profiles.where((p) => !p.isMain).length;
+    var entriesCount = 0;
+    var collectionsCount = 0;
+    for (final p in profiles) {
+      entriesCount += (await listEntries(p.id, includeDeleted: false)).length;
+      collectionsCount += (await listCollections(p.id, includeDeleted: false)).length;
+    }
+    return LocalLibrarySummary(
+      extraProfilesCount: extraProfilesCount,
+      entriesCount: entriesCount,
+      collectionsCount: collectionsCount,
+    );
+  }
+
+  /// Wipes all local profiles, entries, collections, cached details, and pending sync rows,
+  /// then restores a fresh `main` profile. Used on Google sign-out or cloud-replace sign-in.
+  Future<void> resetLocalUserLibrary({int? nowMs}) async {
+    await _db.transaction(() async {
+      await _db.delete(_db.pendingChangesTable).go();
+      await _db.delete(_db.libraryEntriesTable).go();
+      await _db.delete(_db.collectionsTable).go();
+      await _db.delete(_db.cachedDetailsTable).go();
+      await _db.delete(_db.profilesTable).go();
+    });
+    await ensureMainProfile(nowMs: nowMs);
+  }
+
+  Future<int> pruneOldTombstones({int retentionDays = 90, int? nowMs}) async {
+    final ts = nowMs ?? DateTime.now().millisecondsSinceEpoch;
+    final cutoffMs = ts - retentionDays * 24 * 60 * 60 * 1000;
+    var removed = 0;
+    removed += await (_db.delete(_db.libraryEntriesTable)
+          ..where((t) =>
+              t.deletedAt.isNotNull() &
+              t.deletedAt.isBiggerThanValue(0) &
+              t.deletedAt.isSmallerThanValue(cutoffMs)))
+        .go();
+    removed += await (_db.delete(_db.collectionsTable)
+          ..where((t) =>
+              t.deletedAt.isNotNull() &
+              t.deletedAt.isBiggerThanValue(0) &
+              t.deletedAt.isSmallerThanValue(cutoffMs)))
+        .go();
+    removed += await (_db.delete(_db.profilesTable)
+          ..where((t) =>
+              t.id.isNotValue('main') &
+              t.deletedAt.isNotNull() &
+              t.deletedAt.isBiggerThanValue(0) &
+              t.deletedAt.isSmallerThanValue(cutoffMs)))
+        .go();
+    return removed;
   }
 
   Future<void> _writeEntryRow(LibraryEntry entry) async {

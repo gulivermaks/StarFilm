@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
@@ -18,6 +19,7 @@ import '../discovery/gemini_client.dart';
 import '../library/backup_codec.dart';
 import '../library/rating_csv_import.dart';
 import '../players/mobile_players.dart';
+import '../startv/startv_client.dart';
 import '../startv/startv_pairing_dialog.dart';
 import 'ota_updater.dart';
 
@@ -25,6 +27,51 @@ enum _SettingsKeyKind { tmdb, gemini, kinopoisk }
 
 class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
+
+  static Future<bool> interactiveGoogleSignIn(
+    BuildContext context,
+    WidgetRef ref,
+  ) async {
+    return ref.read(appControllerProvider.notifier).signInWithGoogle(
+      onLocalDataConflict: (summary, email) async {
+        if (!context.mounted) return SignInMergeChoice.mergeLocalWithCloud;
+        final s = ref.read(appControllerProvider).strings;
+        final choice = await showDialog<SignInMergeChoice>(
+          context: context,
+          barrierDismissible: false,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: StarFilmColors.surface,
+            title: Text(s.t('cloud_conflict_title')),
+            content: Text(
+              s.t('cloud_conflict_body', {
+                'entries': summary.entriesCount,
+                'collections': summary.collectionsCount,
+                'profiles': summary.extraProfilesCount,
+                'email': email,
+              }),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, SignInMergeChoice.cancel),
+                child: Text(s.t('cancel')),
+              ),
+              OutlinedButton(
+                onPressed: () =>
+                    Navigator.pop(ctx, SignInMergeChoice.replaceLocalWithCloud),
+                child: Text(s.t('cloud_conflict_replace')),
+              ),
+              FilledButton(
+                onPressed: () =>
+                    Navigator.pop(ctx, SignInMergeChoice.mergeLocalWithCloud),
+                child: Text(s.t('cloud_conflict_merge')),
+              ),
+            ],
+          ),
+        );
+        return choice ?? SignInMergeChoice.cancel;
+      },
+    );
+  }
 
   static Future<BackupImportMode?> showBackupImportModeDialog(
     BuildContext context, {
@@ -308,16 +355,27 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 p.id == state.activeProfileId ? Icons.check_circle : Icons.person_outline,
                 color: p.id == state.activeProfileId ? StarFilmColors.lime : null,
               ),
-              title: Text(p.name),
-              subtitle: Text(p.isMain ? s.t('profile_main') : p.id),
+              title: Text(state.displayProfileName(p)),
+              subtitle: Text(
+                p.isMain ? s.t('profile_main') : s.t('profile_subtitle'),
+              ),
               onTap: () => ref.read(appControllerProvider.notifier).switchProfile(p.id),
-              trailing: p.isMain
-                  ? null
-                  : IconButton(
-                      icon: const Icon(Icons.delete_outline),
-                      onPressed: () =>
-                          ref.read(appControllerProvider.notifier).deleteProfile(p.id),
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(
+                    tooltip: s.t('rename_profile'),
+                    icon: const Icon(Icons.edit_outlined, size: 20),
+                    onPressed: () => _renameProfile(context, p),
+                  ),
+                  if (!p.isMain)
+                    IconButton(
+                      tooltip: s.t('delete'),
+                      icon: const Icon(Icons.delete_outline, size: 20),
+                      onPressed: () => _confirmDeleteProfile(context, p),
                     ),
+                ],
+              ),
             ),
           if (state.profiles.length < UserProfile.maxProfiles)
             OutlinedButton.icon(
@@ -355,18 +413,28 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           ),
           ListTile(
             title: Text(s.t('gemini_model')),
-            subtitle: Text(state.geminiModel),
-            trailing: DropdownButton<String>(
-              value: GeminiClient.defaultModels.contains(state.geminiModel)
-                  ? state.geminiModel
-                  : GeminiClient.defaultModels.first,
+            subtitle: DropdownButton<String>(
+              isExpanded: true,
+              value: state.geminiModel,
               items: [
                 for (final m in GeminiClient.defaultModels)
                   DropdownMenuItem(value: m, child: Text(m)),
+                if (!GeminiClient.defaultModels.contains(state.geminiModel))
+                  DropdownMenuItem(
+                    value: state.geminiModel,
+                    child: Text(state.geminiModel),
+                  ),
+                DropdownMenuItem(
+                  value: '_custom_',
+                  child: Text(s.t('custom_gemini_model')),
+                ),
               ],
-              onChanged: (v) {
-                if (v != null) {
-                  ref.read(appControllerProvider.notifier).setGeminiModel(v);
+              onChanged: (v) async {
+                if (v == null) return;
+                if (v == '_custom_') {
+                  await _editCustomGeminiModel(context, state.geminiModel);
+                } else {
+                  await ref.read(appControllerProvider.notifier).setGeminiModel(v);
                 }
               },
             ),
@@ -441,7 +509,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           if (state.cloudUid.isEmpty)
             FilledButton(
               onPressed: state.firebaseConfigured
-                  ? () => ref.read(appControllerProvider.notifier).signInWithGoogle()
+                  ? () => SettingsScreen.interactiveGoogleSignIn(context, ref)
                   : null,
               child: Text(s.t('google_signin')),
             )
@@ -457,8 +525,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 const SizedBox(width: 10),
                 Expanded(
                   child: TextButton(
-                    onPressed: () =>
-                        ref.read(appControllerProvider.notifier).signOutFromGoogle(),
+                    onPressed: () => _confirmAndSignOut(context),
                     child: Text(s.t('google_signout')),
                   ),
                 ),
@@ -510,7 +577,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             decoration: const InputDecoration(isDense: true),
             items: [
               for (final p in MobilePlayerId.values)
-                DropdownMenuItem(value: p, child: Text(p.label)),
+                DropdownMenuItem(value: p, child: Text(p.localizedLabel(s))),
             ],
             onChanged: (v) {
               if (v != null) ref.read(appControllerProvider.notifier).setPreferredPlayer(v);
@@ -570,6 +637,15 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             icon: const Icon(Icons.system_update_outlined),
             label: Text('${s.t('check_updates')} $_versionLabel'),
           ),
+          const SizedBox(height: 20),
+          Text(
+            s.t('tmdb_attribution'),
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              color: StarFilmColors.textSecondary,
+              fontSize: 12,
+            ),
+          ),
         ],
       ),
       ),
@@ -590,23 +666,137 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     );
   }
 
-  Future<void> _addProfile(BuildContext context) async {
-    final s = ref.read(appControllerProvider).strings;
-    final ctrl = TextEditingController();
-    final name = await showDialog<String>(
+  Future<void> _confirmAndSignOut(BuildContext context) async {
+    final state = ref.read(appControllerProvider);
+    final s = state.strings;
+    final pending = state.pendingSyncCount;
+    final body = pending > 0
+        ? s.t('signout_pending_body', {'n': pending})
+        : s.t('signout_confirm_body');
+
+    final action = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: StarFilmColors.surface,
-        title: Text(s.t('new_profile')),
-        content: TextField(controller: ctrl, maxLength: 24, autofocus: true),
+        title: Text(s.t('signout_confirm_title')),
+        content: Text(body),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: Text(s.t('cancel'))),
-          FilledButton(onPressed: () => Navigator.pop(ctx, ctrl.text), child: Text(s.t('ok'))),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, 'cancel'),
+            child: Text(s.t('cancel')),
+          ),
+          if (pending > 0)
+            OutlinedButton(
+              onPressed: () => Navigator.pop(ctx, 'sync_first'),
+              child: Text(s.t('signout_sync_first')),
+            ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, 'signout'),
+            child: Text(s.t('signout_action')),
+          ),
         ],
+      ),
+    );
+
+    if (action == 'sync_first') {
+      final res = await ref.read(appControllerProvider.notifier).syncCloudNow();
+      if (!mounted) return;
+      if (res.state == SyncStatusState.synced) {
+        await ref.read(appControllerProvider.notifier).signOutFromGoogle();
+      } else {
+        ScaffoldMessenger.of(this.context).showSnackBar(
+          SnackBar(content: Text('${res.state.name}: ${res.message}')),
+        );
+      }
+      return;
+    }
+
+    if (action == 'signout') {
+      await ref.read(appControllerProvider.notifier).signOutFromGoogle();
+    }
+  }
+
+  Future<void> _addProfile(BuildContext context) async {
+    final s = ref.read(appControllerProvider).strings;
+    final name = await showDialog<String>(
+      context: context,
+      builder: (_) => _SingleTextDialog(
+        title: s.t('new_profile'),
+        cancelLabel: s.t('cancel'),
+        okLabel: s.t('ok'),
+        maxLength: 24,
       ),
     );
     if (name != null && name.trim().isNotEmpty) {
       await ref.read(appControllerProvider.notifier).createProfile(name);
+    }
+  }
+
+  Future<void> _renameProfile(BuildContext context, UserProfile profile) async {
+    final state = ref.read(appControllerProvider);
+    final s = state.strings;
+    final nextName = await showDialog<String>(
+      context: context,
+      builder: (_) => _SingleTextDialog(
+        title: s.t('rename_profile'),
+        initialValue: state.displayProfileName(profile),
+        cancelLabel: s.t('cancel'),
+        okLabel: s.t('ok'),
+        maxLength: 24,
+      ),
+    );
+    if (nextName != null && nextName.trim().isNotEmpty) {
+      await ref
+          .read(appControllerProvider.notifier)
+          .renameProfile(profile, nextName.trim());
+    }
+  }
+
+  Future<void> _confirmDeleteProfile(
+    BuildContext context,
+    UserProfile profile,
+  ) async {
+    final s = ref.read(appControllerProvider).strings;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: StarFilmColors.surface,
+        title: Text(s.t('delete_profile_confirm_title')),
+        content: Text(s.t('delete_profile_confirm_body', {'name': profile.name})),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text(s.t('cancel')),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(s.t('delete')),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      await ref.read(appControllerProvider.notifier).deleteProfile(profile.id);
+    }
+  }
+
+  Future<void> _editCustomGeminiModel(
+    BuildContext context,
+    String currentModel,
+  ) async {
+    final s = ref.read(appControllerProvider).strings;
+    final model = await showDialog<String>(
+      context: context,
+      builder: (_) => _SingleTextDialog(
+        title: s.t('custom_gemini_title'),
+        initialValue: currentModel,
+        hintText: 'gemini-3.5-pro',
+        cancelLabel: s.t('cancel'),
+        okLabel: s.t('save'),
+      ),
+    );
+    if (model != null && model.trim().isNotEmpty) {
+      await ref.read(appControllerProvider.notifier).setGeminiModel(model.trim());
     }
   }
 
@@ -615,11 +805,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     required String current,
   }) async {
     final s = ref.read(appControllerProvider).strings;
-    final ctrl = TextEditingController(text: current);
-    bool verifying = false;
-    bool? ok;
-    String? verifyError;
-
     final title = switch (kind) {
       _SettingsKeyKind.tmdb => s.t('tmdb_key'),
       _SettingsKeyKind.gemini => s.t('gemini_key'),
@@ -633,93 +818,22 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
     final next = await showDialog<String>(
       context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setModalState) => AlertDialog(
-          backgroundColor: StarFilmColors.surface,
-          title: Text(title),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              TextField(
-                controller: ctrl,
-                autofocus: true,
-                decoration: InputDecoration(
-                  hintText: hint,
-                  suffixIcon: ok == null
-                      ? null
-                      : Icon(
-                          ok! ? Icons.check_circle : Icons.error,
-                          color: ok! ? StarFilmColors.success : StarFilmColors.error,
-                        ),
-                ),
+      builder: (_) => _EditKeyDialog(
+        title: title,
+        hint: hint,
+        initialValue: current,
+        strings: s,
+        verifyCallback: (val) async {
+          final services = ref.read(appServicesProvider);
+          return switch (kind) {
+            _SettingsKeyKind.tmdb => services.tmdb.verifyKey(val),
+            _SettingsKeyKind.gemini => services.gemini.verifyKey(
+                val,
+                model: ref.read(appControllerProvider).geminiModel,
               ),
-              if (verifyError != null) ...[
-                const SizedBox(height: 8),
-                Text(
-                  verifyError!,
-                  style: const TextStyle(color: StarFilmColors.error, fontSize: 12),
-                ),
-              ] else if (ok == true) ...[
-                const SizedBox(height: 8),
-                Text(
-                  s.t('key_verified_ok'),
-                  style: const TextStyle(color: StarFilmColors.success, fontSize: 12),
-                ),
-              ],
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: verifying
-                  ? null
-                  : () async {
-                      setModalState(() {
-                        verifying = true;
-                        verifyError = null;
-                      });
-                      try {
-                        final services = ref.read(appServicesProvider);
-                        final val = ctrl.text.trim();
-                        if (val.isEmpty) {
-                          setModalState(() {
-                            verifying = false;
-                            ok = false;
-                            verifyError = s.t('key_empty');
-                          });
-                          return;
-                        }
-                        final valid = switch (kind) {
-                          _SettingsKeyKind.tmdb => await services.tmdb.verifyKey(val),
-                          _SettingsKeyKind.gemini => await services.gemini.verifyKey(
-                              val,
-                              model: ref.read(appControllerProvider).geminiModel,
-                            ),
-                          _SettingsKeyKind.kinopoisk =>
-                            await services.kinopoisk.verifyKey(val),
-                        };
-                        setModalState(() {
-                          verifying = false;
-                          ok = valid;
-                          verifyError = valid ? null : s.t('key_rejected');
-                        });
-                      } catch (e) {
-                        setModalState(() {
-                          verifying = false;
-                          ok = false;
-                          verifyError = s.t('key_verify_error', {'e': '$e'});
-                        });
-                      }
-                    },
-              child: Text(verifying ? '...' : s.t('verify')),
-            ),
-            TextButton(onPressed: () => Navigator.pop(ctx), child: Text(s.t('cancel'))),
-            FilledButton(
-              onPressed: () => Navigator.pop(ctx, ctrl.text),
-              child: Text(s.t('save')),
-            ),
-          ],
-        ),
+            _SettingsKeyKind.kinopoisk => services.kinopoisk.verifyKey(val),
+          };
+        },
       ),
     );
     if (next != null) {
@@ -809,6 +923,19 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           SnackBar(content: Text(s.t('tv_synced_count', {'n': count}))),
         );
       }
+    } on StarTvException catch (e) {
+      if (mounted) {
+        if (e.statusCode == 401 || e.statusCode == 403) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(s.t('startv_error_auth'))),
+          );
+          await StarTvPairingDialog.show(context);
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(s.t('startv_error_network'))),
+          );
+        }
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
@@ -826,6 +953,19 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(s.t('tv_keys_sent'))),
         );
+      }
+    } on StarTvException catch (e) {
+      if (mounted) {
+        if (e.statusCode == 401 || e.statusCode == 403) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(s.t('startv_error_auth'))),
+          );
+          await StarTvPairingDialog.show(context);
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(s.t('startv_error_network'))),
+          );
+        }
       }
     } catch (e) {
       if (mounted) {
@@ -902,151 +1042,15 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
   Future<void> _importCsvRatings() async {
     final s = ref.read(appControllerProvider).strings;
-    final textCtrl = TextEditingController();
-    bool importing = false;
-    int doneCount = 0;
-    int totalCount = 0;
-    RatingImportBatchResult? result;
-
     await showDialog<void>(
       context: context,
-      barrierDismissible: !importing,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setModalState) => AlertDialog(
-          backgroundColor: StarFilmColors.surface,
-          title: Text(s.t('csv_import_btn')),
-          content: SizedBox(
-            width: double.maxFinite,
-            child: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Text(
-                    s.t('csv_import_hint'),
-                    style: const TextStyle(color: StarFilmColors.textSecondary, fontSize: 12),
-                  ),
-                  const SizedBox(height: 10),
-                  OutlinedButton.icon(
-                    onPressed: importing
-                        ? null
-                        : () async {
-                            final picked = await FilePicker.platform.pickFiles(
-                              type: FileType.custom,
-                              allowedExtensions: const ['csv', 'tsv', 'txt'],
-                            );
-                            final path = picked?.files.single.path;
-                            if (path == null) return;
-                            final content = await File(path).readAsString();
-                            textCtrl.text = content;
-                            setModalState(() {});
-                          },
-                    icon: const Icon(Icons.folder_open),
-                    label: Text(s.t('csv_pick_file')),
-                  ),
-                  const SizedBox(height: 10),
-                  TextField(
-                    controller: textCtrl,
-                    minLines: 4,
-                    maxLines: 8,
-                    enabled: !importing,
-                    decoration: InputDecoration(
-                      hintText: s.t('csv_paste_label'),
-                    ),
-                  ),
-                  if (importing) ...[
-                    const SizedBox(height: 12),
-                    LinearProgressIndicator(
-                      value: totalCount > 0 ? doneCount / totalCount : null,
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      s.t('csv_import_progress', {'done': doneCount, 'total': totalCount}),
-                      style: const TextStyle(fontSize: 12, color: StarFilmColors.textSecondary),
-                    ),
-                  ],
-                  if (result != null) ...[
-                    const SizedBox(height: 12),
-                    Text(
-                      s.t('csv_import_done', {
-                        'n': result!.resolved.length,
-                        'skip': result!.skippedTitles.length,
-                      }),
-                      style: TextStyle(
-                        fontSize: 13,
-                        color: result!.resolved.isNotEmpty
-                            ? StarFilmColors.success
-                            : StarFilmColors.textSecondary,
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: importing ? null : () => Navigator.pop(ctx),
-              child: Text(s.t('close')),
-            ),
-            FilledButton(
-              onPressed: importing
-                  ? null
-                  : () async {
-                      final parsed = RatingCsvParser.parse(textCtrl.text);
-                      if (parsed.isEmpty) {
-                        setModalState(() {
-                          result = const RatingImportBatchResult(
-                            resolved: [],
-                            skippedTitles: [],
-                          );
-                        });
-                        return;
-                      }
-                      setModalState(() {
-                        importing = true;
-                        doneCount = 0;
-                        totalCount = parsed.length;
-                        result = null;
-                      });
-                      try {
-                        final batch = await ref
-                            .read(appControllerProvider.notifier)
-                            .importCsvRatings(
-                              textCtrl.text,
-                              onProgress: (d, t) {
-                                if (ctx.mounted) {
-                                  setModalState(() {
-                                    doneCount = d;
-                                    totalCount = t;
-                                  });
-                                }
-                              },
-                            );
-                        if (ctx.mounted) {
-                          setModalState(() {
-                            importing = false;
-                            result = batch;
-                          });
-                        }
-                      } catch (e) {
-                        if (ctx.mounted) {
-                          setModalState(() => importing = false);
-                        }
-                        if (mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(content: Text('$e')),
-                          );
-                        }
-                      }
-                    },
-              child: Text(s.t('csv_import_run')),
-            ),
-          ],
-        ),
+      builder: (_) => _CsvImportDialog(
+        strings: s,
+        onImport: (rawText, onProgress) => ref
+            .read(appControllerProvider.notifier)
+            .importCsvRatings(rawText, onProgress: onProgress),
       ),
     );
-    textCtrl.dispose();
   }
 
   void _showDiagnostics(BuildContext context) {
@@ -1065,15 +1069,28 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     });
     final logText = ref.read(appServicesProvider).log.exportText();
     final body = logText.isEmpty ? s.t('diagnostics_empty') : logText;
+    final fullReport = '$statusLine\n\n$body';
     showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: StarFilmColors.surface,
         title: Text(s.t('diagnostics')),
         content: SingleChildScrollView(
-          child: SelectableText('$statusLine\n\n$body'),
+          child: SelectableText(fullReport),
         ),
         actions: [
+          TextButton.icon(
+            onPressed: () async {
+              await Clipboard.setData(ClipboardData(text: fullReport));
+              if (ctx.mounted) {
+                ScaffoldMessenger.of(ctx).showSnackBar(
+                  SnackBar(content: Text(s.t('copied_diagnostics'))),
+                );
+              }
+            },
+            icon: const Icon(Icons.copy, size: 16),
+            label: Text(s.t('copy_diagnostics')),
+          ),
           TextButton(onPressed: () => Navigator.pop(ctx), child: Text(s.t('close'))),
         ],
       ),
@@ -1107,5 +1124,388 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     } finally {
       if (mounted) setState(() => _checkingUpdates = false);
     }
+  }
+}
+
+class _SingleTextDialog extends StatefulWidget {
+  const _SingleTextDialog({
+    required this.title,
+    required this.cancelLabel,
+    required this.okLabel,
+    this.initialValue = '',
+    this.hintText,
+    this.maxLength,
+  });
+
+  final String title;
+  final String cancelLabel;
+  final String okLabel;
+  final String initialValue;
+  final String? hintText;
+  final int? maxLength;
+
+  @override
+  State<_SingleTextDialog> createState() => _SingleTextDialogState();
+}
+
+class _SingleTextDialogState extends State<_SingleTextDialog> {
+  late final TextEditingController _ctrl =
+      TextEditingController(text: widget.initialValue);
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: StarFilmColors.surface,
+      title: Text(widget.title),
+      content: TextField(
+        controller: _ctrl,
+        maxLength: widget.maxLength,
+        autofocus: true,
+        decoration: InputDecoration(
+          hintText: widget.hintText,
+        ),
+        buildCounter: widget.maxLength == null
+            ? null
+            : (_, {required currentLength, required isFocused, required maxLength}) =>
+                Text(
+                  '$currentLength/$maxLength',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: StarFilmColors.textSecondary,
+                  ),
+                ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: Text(widget.cancelLabel),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, _ctrl.text),
+          child: Text(widget.okLabel),
+        ),
+      ],
+    );
+  }
+}
+
+class _EditKeyDialog extends StatefulWidget {
+  const _EditKeyDialog({
+    required this.title,
+    required this.hint,
+    required this.initialValue,
+    required this.strings,
+    required this.verifyCallback,
+  });
+
+  final String title;
+  final String hint;
+  final String initialValue;
+  final AppStrings strings;
+  final Future<bool> Function(String val) verifyCallback;
+
+  @override
+  State<_EditKeyDialog> createState() => _EditKeyDialogState();
+}
+
+class _EditKeyDialogState extends State<_EditKeyDialog> {
+  late final TextEditingController _ctrl =
+      TextEditingController(text: widget.initialValue);
+  bool _verifying = false;
+  bool? _ok;
+  String? _verifyError;
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = widget.strings;
+    return AlertDialog(
+      backgroundColor: StarFilmColors.surface,
+      title: Text(widget.title),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          TextField(
+            controller: _ctrl,
+            autofocus: true,
+            decoration: InputDecoration(
+              hintText: widget.hint,
+              suffixIcon: _ok == null
+                  ? null
+                  : Icon(
+                      _ok! ? Icons.check_circle : Icons.error,
+                      color: _ok! ? StarFilmColors.success : StarFilmColors.error,
+                    ),
+            ),
+          ),
+          if (_verifyError != null) ...[
+            const SizedBox(height: 8),
+            Text(
+              _verifyError!,
+              style: const TextStyle(color: StarFilmColors.error, fontSize: 12),
+            ),
+          ] else if (_ok == true) ...[
+            const SizedBox(height: 8),
+            Text(
+              s.t('key_verified_ok'),
+              style: const TextStyle(color: StarFilmColors.success, fontSize: 12),
+            ),
+          ],
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: _verifying
+              ? null
+              : () async {
+                  setState(() {
+                    _verifying = true;
+                    _verifyError = null;
+                  });
+                  try {
+                    final val = _ctrl.text.trim();
+                    if (val.isEmpty) {
+                      setState(() {
+                        _verifying = false;
+                        _ok = false;
+                        _verifyError = s.t('key_empty');
+                      });
+                      return;
+                    }
+                    final valid = await widget.verifyCallback(val);
+                    if (mounted) {
+                      setState(() {
+                        _verifying = false;
+                        _ok = valid;
+                        _verifyError = valid ? null : s.t('key_rejected');
+                      });
+                    }
+                  } catch (e) {
+                    if (mounted) {
+                      setState(() {
+                        _verifying = false;
+                        _ok = false;
+                        _verifyError = s.t('key_verify_error', {'e': '$e'});
+                      });
+                    }
+                  }
+                },
+          child: Text(_verifying ? '...' : s.t('verify')),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: Text(s.t('cancel')),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, _ctrl.text),
+          child: Text(s.t('save')),
+        ),
+      ],
+    );
+  }
+}
+
+class _CsvImportDialog extends StatefulWidget {
+  const _CsvImportDialog({
+    required this.strings,
+    required this.onImport,
+  });
+
+  final AppStrings strings;
+  final Future<RatingImportBatchResult> Function(
+    String rawText,
+    void Function(int done, int total) onProgress,
+  ) onImport;
+
+  @override
+  State<_CsvImportDialog> createState() => _CsvImportDialogState();
+}
+
+class _CsvImportDialogState extends State<_CsvImportDialog> {
+  final _textCtrl = TextEditingController();
+  bool _importing = false;
+  int _doneCount = 0;
+  int _totalCount = 0;
+  RatingImportBatchResult? _result;
+  String? _errorMessage;
+
+  @override
+  void dispose() {
+    _textCtrl.dispose();
+    super.dispose();
+  }
+
+  String _friendlyParseError(FormatException e) {
+    final s = widget.strings;
+    final msg = e.message;
+    if (msg.contains('Empty rating list')) return s.t('csv_error_empty');
+    if (msg.contains('Maximum 100') || msg.contains('too large')) {
+      return s.t('csv_error_too_many');
+    }
+    return s.t('csv_error_format');
+  }
+
+  Future<void> _runImport() async {
+    final s = widget.strings;
+    final raw = _textCtrl.text;
+    if (raw.trim().isEmpty) {
+      setState(() {
+        _errorMessage = s.t('csv_error_empty');
+        _result = null;
+      });
+      return;
+    }
+    final List<RatingImportRow> parsed;
+    try {
+      parsed = RatingCsvParser.parse(raw);
+    } on FormatException catch (e) {
+      setState(() {
+        _errorMessage = _friendlyParseError(e);
+        _result = null;
+      });
+      return;
+    }
+
+    setState(() {
+      _importing = true;
+      _doneCount = 0;
+      _totalCount = parsed.length;
+      _result = null;
+      _errorMessage = null;
+    });
+
+    try {
+      final batch = await widget.onImport(raw, (d, t) {
+        if (mounted) {
+          setState(() {
+            _doneCount = d;
+            _totalCount = t;
+          });
+        }
+      });
+      if (mounted) {
+        setState(() {
+          _importing = false;
+          _result = batch;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _importing = false;
+          _errorMessage = '$e';
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = widget.strings;
+    return AlertDialog(
+      backgroundColor: StarFilmColors.surface,
+      title: Text(s.t('csv_import_btn')),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                s.t('csv_import_hint'),
+                style: const TextStyle(color: StarFilmColors.textSecondary, fontSize: 12),
+              ),
+              const SizedBox(height: 10),
+              OutlinedButton.icon(
+                onPressed: _importing
+                    ? null
+                    : () async {
+                        final picked = await FilePicker.platform.pickFiles(
+                          type: FileType.custom,
+                          allowedExtensions: const ['csv', 'tsv', 'txt'],
+                        );
+                        final path = picked?.files.single.path;
+                        if (path == null) return;
+                        final bytes = await File(path).readAsBytes();
+                        _textCtrl.text = RatingCsvParser.decodeBytesWithFallback(bytes);
+                        if (mounted) setState(() => _errorMessage = null);
+                      },
+                icon: const Icon(Icons.folder_open),
+                label: Text(s.t('csv_pick_file')),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: _textCtrl,
+                minLines: 4,
+                maxLines: 8,
+                enabled: !_importing,
+                onChanged: (_) {
+                  if (_errorMessage != null) setState(() => _errorMessage = null);
+                },
+                decoration: InputDecoration(
+                  hintText: s.t('csv_paste_label'),
+                ),
+              ),
+              if (_errorMessage != null) ...[
+                const SizedBox(height: 10),
+                Text(
+                  _errorMessage!,
+                  style: const TextStyle(color: StarFilmColors.error, fontSize: 13),
+                ),
+              ],
+              if (_importing) ...[
+                const SizedBox(height: 12),
+                LinearProgressIndicator(
+                  value: _totalCount > 0 ? _doneCount / _totalCount : null,
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  s.t('csv_import_progress', {'done': _doneCount, 'total': _totalCount}),
+                  style: const TextStyle(fontSize: 12, color: StarFilmColors.textSecondary),
+                ),
+              ],
+              if (_result != null) ...[
+                const SizedBox(height: 12),
+                Text(
+                  s.t('csv_import_done', {
+                    'n': _result!.resolved.length,
+                    'skip': _result!.skippedTitles.length,
+                  }),
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: _result!.resolved.isNotEmpty
+                        ? StarFilmColors.success
+                        : StarFilmColors.textSecondary,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _importing ? null : () => Navigator.pop(context),
+          child: Text(s.t('close')),
+        ),
+        FilledButton(
+          onPressed: _importing ? null : _runImport,
+          child: Text(s.t('csv_import_run')),
+        ),
+      ],
+    );
   }
 }

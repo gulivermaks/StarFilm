@@ -2,7 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/app_state.dart';
+import '../../app/l10n.dart';
 import '../../app/theme.dart';
+import '../../core/network/lan_guard.dart';
+import 'qr_scanner_screen.dart';
+import 'startv_client.dart';
 import 'startv_models.dart';
 
 class StarTvPairingDialog extends ConsumerStatefulWidget {
@@ -35,7 +39,39 @@ class _StarTvPairingDialogState extends ConsumerState<StarTvPairingDialog> {
     super.dispose();
   }
 
+  Future<void> _scanQr() async {
+    final s = ref.read(appControllerProvider).strings;
+    final scanned = await Navigator.of(context).push<String>(
+      MaterialPageRoute(
+        builder: (_) => QrScannerScreen(
+          title: s.t('scan_qr_title'),
+          hint: s.t('scan_qr_hint'),
+        ),
+      ),
+    );
+    if (!mounted || scanned == null || scanned.isEmpty) return;
+    _qrUrlController.text = scanned;
+    await _pair();
+  }
+
+  String _formatFriendlyError(Object e, AppStrings s) {
+    if (e is LanGuardException) {
+      return s.t('startv_error_lan');
+    }
+    if (e is FormatException) {
+      return s.t('startv_invalid_qr');
+    }
+    if (e is StarTvException) {
+      if (e.statusCode == 401 || e.statusCode == 403) {
+        return s.t('startv_error_auth');
+      }
+      return s.t('startv_error_network');
+    }
+    return s.t('startv_error_network');
+  }
+
   Future<void> _pair() async {
+    final s = ref.read(appControllerProvider).strings;
     setState(() {
       _busy = true;
       _error = null;
@@ -49,7 +85,7 @@ class _StarTvPairingDialogState extends ConsumerState<StarTvPairingDialog> {
       if (qrRaw.isNotEmpty) {
         final parsed = StarTvQrPayload.tryParse(qrRaw);
         if (parsed == null) {
-          throw FormatException(ref.read(appControllerProvider).strings.t('startv_invalid_qr'));
+          throw const FormatException('invalid_qr');
         }
         ip = parsed.ip;
         port = parsed.port;
@@ -57,6 +93,7 @@ class _StarTvPairingDialogState extends ConsumerState<StarTvPairingDialog> {
       }
 
       final client = ref.read(appServicesProvider).starTv;
+      await client.fetchStatus(ip: ip, port: port);
       final auth = await client.authenticate(ip: ip, port: port, pin: pin);
       final device = StarTvDevice(
         tvId: auth.tvId,
@@ -67,12 +104,14 @@ class _StarTvPairingDialogState extends ConsumerState<StarTvPairingDialog> {
         installedPlayers: auth.installedPlayers,
         syncApiVersion: auth.syncApiVersion,
       );
-      await ref.read(appControllerProvider.notifier).saveStarTvDevice(device, auth.token);
+      await ref
+          .read(appControllerProvider.notifier)
+          .saveStarTvDevice(device, auth.token);
       if (mounted) Navigator.of(context).pop(true);
     } catch (e) {
       if (mounted) {
         setState(() {
-          _error = e.toString();
+          _error = _formatFriendlyError(e, s);
           _busy = false;
         });
       }
@@ -84,53 +123,85 @@ class _StarTvPairingDialogState extends ConsumerState<StarTvPairingDialog> {
     final s = ref.watch(appControllerProvider).strings;
     return AlertDialog(
       backgroundColor: StarFilmColors.surface,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+      titlePadding: const EdgeInsets.fromLTRB(20, 18, 20, 8),
+      contentPadding: const EdgeInsets.fromLTRB(20, 4, 20, 8),
       title: Text(s.t('startv_connect')),
-      content: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            TextField(
-              controller: _qrUrlController,
-              decoration: InputDecoration(
-                labelText: ref.watch(appControllerProvider).strings.t('startv_qr_label'),
-                hintText: 'http://192.168.1.50:8088/?pin=123456',
+      content: SizedBox(
+        width: double.maxFinite,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              FilledButton.icon(
+                onPressed: _busy ? null : _scanQr,
+                icon: const Icon(Icons.qr_code_scanner, size: 18),
+                label: Text(s.t('scan_qr_btn')),
               ),
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: _ipController,
-              keyboardType: TextInputType.number,
-              decoration: InputDecoration(
-                labelText: ref.watch(appControllerProvider).strings.t('startv_ip_label'),
+              const SizedBox(height: 10),
+              TextField(
+                controller: _qrUrlController,
+                decoration: InputDecoration(
+                  isDense: true,
+                  labelText: s.t('startv_qr_label'),
+                  hintText: 'http://192.168.1.50:8088/?pin=123456',
+                ),
               ),
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: _pinController,
-              keyboardType: TextInputType.number,
-              decoration: InputDecoration(labelText: s.t('startv_pin_label')),
-            ),
-            const SizedBox(height: 14),
-            RadioListTile<StarTvTrustMode>(
-              value: StarTvTrustMode.home,
-              groupValue: _trustMode,
-              onChanged: (v) => setState(() => _trustMode = v!),
-              title: Text(s.t('startv_home_mode')),
-              subtitle: Text(s.t('startv_home_desc')),
-            ),
-            RadioListTile<StarTvTrustMode>(
-              value: StarTvTrustMode.guest,
-              groupValue: _trustMode,
-              onChanged: (v) => setState(() => _trustMode = v!),
-              title: Text(s.t('startv_guest_mode')),
-              subtitle: Text(s.t('startv_guest_desc')),
-            ),
-            if (_error != null) ...[
               const SizedBox(height: 8),
-              Text(_error!, style: const TextStyle(color: StarFilmColors.error)),
+              TextField(
+                controller: _ipController,
+                keyboardType: TextInputType.number,
+                decoration: InputDecoration(
+                  isDense: true,
+                  labelText: s.t('startv_ip_label'),
+                ),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _pinController,
+                keyboardType: TextInputType.number,
+                decoration: InputDecoration(
+                  isDense: true,
+                  labelText: s.t('startv_pin_label'),
+                ),
+              ),
+              const SizedBox(height: 6),
+              RadioListTile<StarTvTrustMode>(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                visualDensity: VisualDensity.compact,
+                value: StarTvTrustMode.home,
+                groupValue: _trustMode,
+                onChanged: (v) => setState(() => _trustMode = v!),
+                title: Text(s.t('startv_home_mode')),
+                subtitle: Text(
+                  s.t('startv_home_desc'),
+                  style: const TextStyle(fontSize: 12),
+                ),
+              ),
+              RadioListTile<StarTvTrustMode>(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                visualDensity: VisualDensity.compact,
+                value: StarTvTrustMode.guest,
+                groupValue: _trustMode,
+                onChanged: (v) => setState(() => _trustMode = v!),
+                title: Text(s.t('startv_guest_mode')),
+                subtitle: Text(
+                  s.t('startv_guest_desc'),
+                  style: const TextStyle(fontSize: 12),
+                ),
+              ),
+              if (_error != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  _error!,
+                  style: const TextStyle(color: StarFilmColors.error, fontSize: 13),
+                ),
+              ],
             ],
-          ],
+          ),
         ),
       ),
       actions: [

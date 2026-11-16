@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
 import '../../core/models/media_key.dart';
 import '../search/tmdb_client.dart';
 import '../search/tmdb_matcher.dart';
@@ -48,6 +51,38 @@ class RatingCsvParser {
   static final RegExp _validRating = RegExp(r'^(?:10|[1-9])$');
   static final RegExp _validYear = RegExp(r'^(?:18|19|20|21)\d{2}$');
 
+  static String decodeBytesWithFallback(Uint8List bytes) {
+    try {
+      return utf8.decode(bytes, allowMalformed: false);
+    } on FormatException {
+      return _decodeWindows1251(bytes);
+    }
+  }
+
+  static String _decodeWindows1251(Uint8List bytes) {
+    const map128to191 = [
+      0x0402, 0x0403, 0x201A, 0x0453, 0x201E, 0x2026, 0x2020, 0x2021,
+      0x20AC, 0x2030, 0x0409, 0x2039, 0x040A, 0x040C, 0x040B, 0x040F,
+      0x0452, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+      0x0098, 0x2122, 0x0459, 0x203A, 0x045A, 0x045C, 0x045B, 0x045F,
+      0x00A0, 0x040E, 0x045E, 0x0408, 0x00A4, 0x0490, 0x00A6, 0x00A7,
+      0x0401, 0x00A9, 0x0404, 0x00AB, 0x00AC, 0x00AD, 0x00AE, 0x0407,
+      0x00B0, 0x00B1, 0x0406, 0x0456, 0x0491, 0x00B5, 0x00B6, 0x00B7,
+      0x0451, 0x2116, 0x0454, 0x00BB, 0x0458, 0x0405, 0x0455, 0x0457,
+    ];
+    final sb = StringBuffer();
+    for (final b in bytes) {
+      if (b < 0x80) {
+        sb.writeCharCode(b);
+      } else if (b >= 0xC0) {
+        sb.writeCharCode(0x0410 + (b - 0xC0));
+      } else {
+        sb.writeCharCode(map128to191[b - 0x80]);
+      }
+    }
+    return sb.toString();
+  }
+
   static List<RatingImportRow> parse(String rawText) {
     if (rawText.length > 120000) {
       throw const FormatException('CSV list is too large');
@@ -59,16 +94,20 @@ class RatingCsvParser {
     var yearCol = -1;
     var ratingCol = -1;
     var typeCol = -1;
+    String? lockedSep;
 
     for (final rawLine in lines) {
       final line = rawLine.trim();
       if (line.isEmpty) continue;
 
-      final sep = line.contains('\t')
+      final candidateSep = line.contains('\t')
           ? '\t'
           : (line.contains(';') ? ';' : (line.contains(',') ? ',' : ''));
+      lockedSep ??= candidateSep.isNotEmpty ? candidateSep : null;
+      final activeSep =
+          (lockedSep != null && line.contains(lockedSep)) ? lockedSep : candidateSep;
 
-      final cols = sep.isNotEmpty ? splitCsvLine(line, sep) : <String>[];
+      final cols = activeSep.isNotEmpty ? splitCsvLine(line, activeSep) : <String>[];
 
       if (rows.isEmpty && titleCol < 0 && cols.isNotEmpty) {
         var foundTitle = -1;
@@ -112,7 +151,6 @@ class RatingCsvParser {
         ratingStr = match.group(2)!;
       } else if (titleCol >= 0) {
         if (cols.length >= 2 && (titleCol >= cols.length || ratingCol >= cols.length)) {
-          // Fallback for mixed separator rows (e.g., TSV row after semicolon CSV header)
           if (cols.length == 3) {
             title = cols[0];
             yearStr = cols[1];
@@ -141,8 +179,15 @@ class RatingCsvParser {
         yearStr = cols[1];
         ratingStr = cols[2];
       } else if (cols.length == 2) {
-        title = cols[0];
-        ratingStr = cols[1];
+        // Guard against text lines with a comma like "One, Two - 8/10"
+        final dashCheck = _dashRatingPattern.firstMatch(line);
+        if (dashCheck != null && activeSep == ',') {
+          title = dashCheck.group(1)!;
+          ratingStr = dashCheck.group(2)!;
+        } else {
+          title = cols[0];
+          ratingStr = cols[1];
+        }
       } else {
         throw const FormatException('Expected CSV/TSV columns (Title;Year;Rating)');
       }
@@ -236,6 +281,7 @@ class RatingCsvImporter {
   Future<RatingImportBatchResult> resolveRows({
     required String tmdbApiKey,
     required List<RatingImportRow> rows,
+    String resultContentLanguage = 'uk',
     void Function(int done, int total)? onProgress,
   }) async {
     final resolved = <ResolvedRatingImportItem>[];
@@ -245,27 +291,20 @@ class RatingCsvImporter {
       final row = rows[i];
       onProgress?.call(i, rows.length);
 
-      final lang = RatingCsvParser.detectSearchLanguage(row.title);
-      List<TmdbSearchCandidate> candidates;
-      try {
-        if (row.mediaType != null) {
-          candidates = await _tmdb.searchTyped(
-            apiKey: tmdbApiKey,
-            mediaType: row.mediaType!,
-            query: row.title,
-            contentLanguage: lang,
-            year: row.year,
-          );
-        } else {
-          candidates = await _tmdb.searchMulti(
-            apiKey: tmdbApiKey,
-            query: row.title,
-            contentLanguage: lang,
-            yearHint: row.year,
-          );
-        }
-      } catch (_) {
-        candidates = const [];
+      // Search in profile's contentLanguage first so titles/posters localize automatically
+      // even for Latin queries like "The Matrix", with fallback to query script language.
+      final queryLang = RatingCsvParser.detectSearchLanguage(row.title);
+      List<TmdbSearchCandidate> candidates = await _searchWithRetry(
+        tmdbApiKey: tmdbApiKey,
+        row: row,
+        contentLanguage: resultContentLanguage,
+      );
+      if (candidates.isEmpty && queryLang != resultContentLanguage) {
+        candidates = await _searchWithRetry(
+          tmdbApiKey: tmdbApiKey,
+          row: row,
+          contentLanguage: queryLang,
+        );
       }
 
       TmdbSearchCandidate? best;
@@ -277,9 +316,14 @@ class RatingCsvImporter {
           break;
         }
       }
-      best ??= candidates.isNotEmpty && TmdbMatcher.yearsCompatible(row.year, candidates.first.year)
-          ? candidates.first
-          : null;
+      // Only fall back to candidates.first when year is explicitly provided and matches closely;
+      // never guess an arbitrary title when year is missing and titles did not match.
+      if (best == null &&
+          row.year != null &&
+          candidates.isNotEmpty &&
+          TmdbMatcher.yearsCompatible(row.year, candidates.first.year)) {
+        best = candidates.first;
+      }
 
       if (best != null) {
         resolved.add(ResolvedRatingImportItem(candidate: best, rating: row.rating));
@@ -290,5 +334,40 @@ class RatingCsvImporter {
     onProgress?.call(rows.length, rows.length);
 
     return RatingImportBatchResult(resolved: resolved, skippedTitles: skipped);
+  }
+
+  Future<List<TmdbSearchCandidate>> _searchWithRetry({
+    required String tmdbApiKey,
+    required RatingImportRow row,
+    required String contentLanguage,
+  }) async {
+    for (var attempt = 0; attempt < 2; attempt++) {
+      try {
+        if (row.mediaType != null) {
+          return await _tmdb.searchTyped(
+            apiKey: tmdbApiKey,
+            mediaType: row.mediaType!,
+            query: row.title,
+            contentLanguage: contentLanguage,
+            year: row.year,
+          );
+        }
+        return await _tmdb.searchMulti(
+          apiKey: tmdbApiKey,
+          query: row.title,
+          contentLanguage: contentLanguage,
+          yearHint: row.year,
+        );
+      } on TmdbHttpException catch (e) {
+        if (e.statusCode == 429 && attempt == 0) {
+          await Future<void>.delayed(const Duration(milliseconds: 600));
+          continue;
+        }
+        return const [];
+      } catch (_) {
+        return const [];
+      }
+    }
+    return const [];
   }
 }

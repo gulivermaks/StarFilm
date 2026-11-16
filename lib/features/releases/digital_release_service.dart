@@ -34,24 +34,26 @@ class DigitalReleaseService {
     if (tmdbApiKey.trim().isEmpty) return const [];
 
     final current = now ?? DateTime.now();
+    final prefs = await SharedPreferences.getInstance();
+    final alreadyNotified =
+        (prefs.getStringList(_prefNotifiedIds) ?? const <String>[]).toSet();
+
+    // Filter out already notified items BEFORE taking maxEntriesPerCheck
+    // so new watchlist additions beyond index 20 still get checked.
     final watchlistMovies = entries
         .where(
           (e) =>
               !e.isDeleted &&
               e.mediaType == MediaType.movie &&
-              e.status == WatchStatus.watchlist,
+              e.status == WatchStatus.watchlist &&
+              !alreadyNotified.contains(e.keyString),
         )
         .take(maxEntriesPerCheck)
         .toList();
     if (watchlistMovies.isEmpty) return const [];
 
-    final prefs = await SharedPreferences.getInstance();
-    final alreadyNotified =
-        (prefs.getStringList(_prefNotifiedIds) ?? const <String>[]).toSet();
-
     final matches = <DigitalReleaseMatch>[];
     for (final entry in watchlistMovies) {
-      if (alreadyNotified.contains(entry.keyString)) continue;
       final digitalDate = await _tmdb.fetchMovieDigitalReleaseDate(
         apiKey: tmdbApiKey,
         tmdbId: entry.tmdbId,

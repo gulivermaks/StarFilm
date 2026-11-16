@@ -5,6 +5,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../app/app_state.dart';
 import '../../app/theme.dart';
 import '../../core/models/media_key.dart';
+import '../settings/settings_screen.dart';
 import '../startv/startv_pairing_dialog.dart';
 
 class OnboardingScreen extends ConsumerStatefulWidget {
@@ -21,6 +22,9 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   final _tmdbController = TextEditingController();
   final _geminiController = TextEditingController();
   final _kpController = TextEditingController();
+  bool _tmdbDirty = false;
+  bool _geminiDirty = false;
+  bool _kpDirty = false;
   bool? _tmdbOk;
   bool? _geminiOk;
   bool? _kpOk;
@@ -30,6 +34,25 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   bool _verifyingTmdb = false;
   bool _verifyingGemini = false;
   bool _verifyingKp = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final state = ref.read(appControllerProvider);
+    _syncControllersFromState(state);
+  }
+
+  void _syncControllersFromState(AppControllerState state) {
+    if (!_tmdbDirty && _tmdbController.text.isEmpty && state.tmdbKey.isNotEmpty) {
+      _tmdbController.text = state.tmdbKey;
+    }
+    if (!_geminiDirty && _geminiController.text.isEmpty && state.geminiKey.isNotEmpty) {
+      _geminiController.text = state.geminiKey;
+    }
+    if (!_kpDirty && _kpController.text.isEmpty && state.kinopoiskKey.isNotEmpty) {
+      _kpController.text = state.kinopoiskKey;
+    }
+  }
 
   @override
   void dispose() {
@@ -128,6 +151,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(appControllerProvider);
+    _syncControllersFromState(state);
     final s = state.strings;
 
     return Scaffold(
@@ -173,10 +197,19 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                     child: FilledButton(
                       onPressed: () async {
                         if (_step == 1) {
+                          final tmdbText = _tmdbController.text.trim();
+                          final geminiText = _geminiController.text.trim();
+                          final kpText = _kpController.text.trim();
                           await ref.read(appControllerProvider.notifier).setApiKeys(
-                                tmdbKey: _tmdbController.text.trim(),
-                                geminiKey: _geminiController.text.trim(),
-                                kinopoiskKey: _kpController.text.trim(),
+                                tmdbKey: (_tmdbDirty || tmdbText.isNotEmpty)
+                                    ? tmdbText
+                                    : null,
+                                geminiKey: (_geminiDirty || geminiText.isNotEmpty)
+                                    ? geminiText
+                                    : null,
+                                kinopoiskKey: (_kpDirty || kpText.isNotEmpty)
+                                    ? kpText
+                                    : null,
                               );
                         }
                         if (_step < 4) {
@@ -254,6 +287,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
               verifyLabel: s.t('verify'),
               onVerify: () => _verifySingleKey(_OnboardingKeyKind.tmdb),
               onChanged: () {
+                _tmdbDirty = true;
                 if (_tmdbOk != null || _tmdbMessage != null) {
                   setState(() {
                     _tmdbOk = null;
@@ -275,6 +309,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
               verifyLabel: s.t('verify'),
               onVerify: () => _verifySingleKey(_OnboardingKeyKind.gemini),
               onChanged: () {
+                _geminiDirty = true;
                 if (_geminiOk != null || _geminiMessage != null) {
                   setState(() {
                     _geminiOk = null;
@@ -296,6 +331,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
               verifyLabel: s.t('verify'),
               onVerify: () => _verifySingleKey(_OnboardingKeyKind.kinopoisk),
               onChanged: () {
+                _kpDirty = true;
                 if (_kpOk != null || _kpMessage != null) {
                   setState(() {
                     _kpOk = null;
@@ -323,7 +359,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
             OutlinedButton.icon(
               onPressed: state.firebaseConfigured
                   ? () async {
-                      await ref.read(appControllerProvider.notifier).signInWithGoogle();
+                      await SettingsScreen.interactiveGoogleSignIn(context, ref);
                     }
                   : null,
               icon: const Icon(Icons.cloud_outlined),

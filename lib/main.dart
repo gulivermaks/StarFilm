@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'app/app_state.dart';
@@ -37,6 +38,17 @@ class StarFilmApp extends ConsumerWidget {
       title: 'StarFilm',
       debugShowCheckedModeBanner: false,
       theme: buildStarFilmTheme(),
+      locale: Locale(state.uiLanguage),
+      supportedLocales: const [
+        Locale('uk'),
+        Locale('ru'),
+        Locale('en'),
+      ],
+      localizationsDelegates: const [
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
       home: !state.initialized
           ? const Scaffold(
               body: Center(child: CircularProgressIndicator(color: StarFilmColors.lime)),
@@ -53,8 +65,27 @@ class HomeShell extends ConsumerStatefulWidget {
   ConsumerState<HomeShell> createState() => _HomeShellState();
 }
 
-class _HomeShellState extends ConsumerState<HomeShell> {
+class _HomeShellState extends ConsumerState<HomeShell> with WidgetsBindingObserver {
   int _tabIndex = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      ref.read(appControllerProvider.notifier).onAppResumed();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -80,7 +111,8 @@ class _HomeShellState extends ConsumerState<HomeShell> {
           children: [
             const Text('StarFilm', style: TextStyle(fontWeight: FontWeight.w800)),
             const SizedBox(width: 10),
-            PopupMenuButton<String>(
+            Flexible(
+              child: PopupMenuButton<String>(
               onSelected: (id) {
                 if (id == '_guest_toggle') {
                   ref
@@ -104,7 +136,13 @@ class _HomeShellState extends ConsumerState<HomeShell> {
                           color: StarFilmColors.lime,
                         ),
                         const SizedBox(width: 8),
-                        Text(p.name),
+                        Expanded(
+                          child: Text(
+                            state.displayProfileName(p),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
                       ],
                     ),
                   ),
@@ -119,7 +157,13 @@ class _HomeShellState extends ConsumerState<HomeShell> {
                         color: StarFilmColors.lime,
                       ),
                       const SizedBox(width: 8),
-                      Text(s.t('guest_evening')),
+                      Expanded(
+                        child: Text(
+                          s.t('guest_evening'),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
                     ],
                   ),
                 ),
@@ -136,7 +180,10 @@ class _HomeShellState extends ConsumerState<HomeShell> {
                 child: Text(
                   state.guestEvening
                       ? s.t('guest_evening_short')
-                      : state.activeProfile.name,
+                      : state.displayProfileName(state.activeProfile),
+                  maxLines: 1,
+                  softWrap: false,
+                  overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.w700,
@@ -146,6 +193,7 @@ class _HomeShellState extends ConsumerState<HomeShell> {
                   ),
                 ),
               ),
+            ),
             ),
           ],
         ),

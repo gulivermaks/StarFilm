@@ -8,7 +8,6 @@ import '../../core/platform/device_bridge.dart';
 import '../details/details_sheet.dart';
 import '../search/tmdb_client.dart';
 import 'discovery_models.dart';
-import 'match_swipe_sheet.dart';
 
 class DiscoveryTab extends ConsumerStatefulWidget {
   const DiscoveryTab({super.key});
@@ -150,46 +149,34 @@ class _DiscoveryTabState extends ConsumerState<DiscoveryTab> {
           ],
         ),
         const SizedBox(height: 12),
-        Row(
-          children: [
-            Expanded(
-              child: FilledButton.icon(
-                onPressed: state.isPicking || state.tmdbKey.isEmpty ? null : () => _runPick(),
-                icon: state.isPicking
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: StarFilmColors.onLime,
-                        ),
-                      )
-                    : const Icon(Icons.movie_filter),
-                label: Text(s.t('pick_button')),
-              ),
-            ),
-            if (state.recommendations.isNotEmpty) ...[
-              const SizedBox(width: 8),
-              OutlinedButton.icon(
-                onPressed: state.isPicking ? null : () => _runPick(different: true),
-                icon: const Icon(Icons.refresh),
-                label: Text(s.t('pick_more')),
-              ),
-              const SizedBox(width: 8),
-              OutlinedButton.icon(
-                onPressed: state.isPicking
-                    ? null
-                    : () => MatchSwipeSheet.show(
-                          context,
-                          cards: state.recommendations,
-                          strings: s,
-                        ),
-                icon: const Icon(Icons.swipe),
-                label: Text(s.t('match_swipe_btn')),
-              ),
-            ],
-          ],
+        SizedBox(
+          width: double.infinity,
+          child: FilledButton.icon(
+            onPressed: state.isPicking || state.tmdbKey.isEmpty ? null : () => _runPick(),
+            icon: state.isPicking
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: StarFilmColors.onLime,
+                    ),
+                  )
+                : const Icon(Icons.movie_filter),
+            label: Text(s.t('pick_button')),
+          ),
         ),
+        if (state.recommendations.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: state.isPicking ? null : () => _runPick(different: true),
+              icon: const Icon(Icons.refresh),
+              label: Text(s.t('pick_more')),
+            ),
+          ),
+        ],
         if (state.tmdbKey.isEmpty) ...[
           const SizedBox(height: 16),
           Card(
@@ -278,6 +265,8 @@ class _DiscoveryTabState extends ConsumerState<DiscoveryTab> {
                     Text(
                       [
                         if (card.year != null) '${card.year}',
+                        if (card.runtimeMinutes != null)
+                          s.t('runtime_min', {'n': card.runtimeMinutes}),
                         if (card.tmdbRating != null) 'TMDB ${card.tmdbRating!.toStringAsFixed(1)}',
                         card.mediaType == MediaType.tv ? s.t('type_tv') : s.t('type_movie'),
                       ].join(' • '),

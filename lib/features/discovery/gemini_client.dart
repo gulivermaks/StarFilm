@@ -164,11 +164,14 @@ class GeminiClient {
       }
     }
 
+    final effectiveMaxMinutes = request.maxMinutes ??
+        (request.preset == EveningPreset.under90 ? 90 : 0);
+
     return {
       'userQuery': request.prompt.trim(),
       'preset': request.preset?.id ?? '',
       'mediaType': request.mediaTypeFilter?.wireValue ?? 'all',
-      'maxMinutes': request.maxMinutes ?? 0,
+      'maxMinutes': effectiveMaxMinutes,
       'guestMode': request.guestMode,
       'different': request.different,
       'excludedGenres': excludedGenreNames,
@@ -189,11 +192,15 @@ class GeminiClient {
       'en' => 'English',
       _ => 'Ukrainian',
     };
+    final maxMinutes = (compactPayload['maxMinutes'] as num?)?.toInt() ?? 0;
+    final runtimeRule = maxMinutes > 0
+        ? '\n- Strictly recommend ONLY titles with runtime <= $maxMinutes minutes (exclude 2-hour+ films).'
+        : '';
     return '''
 Recommend 12 real, existing movies or TV series matching the JSON context below.
 Rules:
 - Never invent fictional titles. Provide accurate original_title and release year.
-- Never include anything from doNotRecommend, recentShown, or excludedGenres.
+- Never include anything from doNotRecommend, recentShown, or excludedGenres.$runtimeRule
 - Write title, genre, and a short spoiler-free reason (max 140 chars) in $langName.
 - If guestMode is true, ignore narrow personal preferences and focus on broad crowd-pleasing picks matching the request/preset.
 Context JSON:

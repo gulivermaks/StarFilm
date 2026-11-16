@@ -11,6 +11,8 @@ import '../library/backup_codec.dart';
 import '../players/mobile_players.dart';
 import '../ratings/kinopoisk_client.dart';
 import '../search/tmdb_client.dart';
+import '../startv/startv_client.dart';
+import '../startv/startv_pairing_dialog.dart';
 
 class MediaDetailsSheet extends ConsumerStatefulWidget {
   const MediaDetailsSheet({
@@ -24,6 +26,7 @@ class MediaDetailsSheet extends ConsumerStatefulWidget {
     this.initialGenreIds = const [],
     this.initialRating,
     this.reason = '',
+    this.scrollController,
   });
 
   final MediaType mediaType;
@@ -35,6 +38,7 @@ class MediaDetailsSheet extends ConsumerStatefulWidget {
   final List<int> initialGenreIds;
   final double? initialRating;
   final String reason;
+  final ScrollController? scrollController;
 
   static Future<void> show(
     BuildContext context, {
@@ -71,6 +75,7 @@ class MediaDetailsSheet extends ConsumerStatefulWidget {
           initialGenreIds: genreIds,
           initialRating: tmdbRating,
           reason: reason,
+          scrollController: controller,
         ),
       ),
     );
@@ -166,6 +171,7 @@ class _MediaDetailsSheetState extends ConsumerState<MediaDetailsSheet> {
       child: Padding(
         padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
         child: ListView(
+          controller: widget.scrollController,
           children: [
           Center(
             child: Container(
@@ -376,31 +382,43 @@ class _MediaDetailsSheetState extends ConsumerState<MediaDetailsSheet> {
             ],
           ),
           const SizedBox(height: 8),
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              children: [
-                for (var i = 1; i <= 10; i++)
-                  Padding(
-                    padding: const EdgeInsets.only(right: 6),
-                    child: ChoiceChip(
-                      label: Text('$i'),
-                      selected: existing?.userRating == i,
-                      onSelected: (_) => _saveAction(
-                        title: title,
-                        originalTitle: originalTitle,
-                        year: year,
-                        posterPath: posterPath,
-                        genreIds: genreIds,
-                        tmdbRating: rating,
-                        userRating: existing?.userRating == i ? null : i,
-                        clearRating: existing?.userRating == i,
+          for (final rowRange in const [
+            [1, 2, 3, 4, 5],
+            [6, 7, 8, 9, 10],
+          ])
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Row(
+                children: [
+                  for (var idx = 0; idx < rowRange.length; idx++) ...[
+                    if (idx > 0) const SizedBox(width: 6),
+                    Expanded(
+                      child: ChoiceChip(
+                        showCheckmark: false,
+                        label: Center(
+                          child: Text(
+                            '${rowRange[idx]}',
+                            style: const TextStyle(fontWeight: FontWeight.w600),
+                          ),
+                        ),
+                        selected: existing?.userRating == rowRange[idx],
+                        onSelected: (_) => _saveAction(
+                          title: title,
+                          originalTitle: originalTitle,
+                          year: year,
+                          posterPath: posterPath,
+                          genreIds: genreIds,
+                          tmdbRating: rating,
+                          userRating:
+                              existing?.userRating == rowRange[idx] ? null : rowRange[idx],
+                          clearRating: existing?.userRating == rowRange[idx],
+                        ),
                       ),
                     ),
-                  ),
-              ],
+                  ],
+                ],
+              ),
             ),
-          ),
           const SizedBox(height: 10),
           Wrap(
             spacing: 8,
@@ -565,14 +583,14 @@ class _MediaDetailsSheetState extends ConsumerState<MediaDetailsSheet> {
             if (_details?.directorsOrCreators.isNotEmpty == true) ...[
               const SizedBox(height: 12),
               Text(
-                _details!.directorsOrCreators.join(', '),
+                '${widget.mediaType == MediaType.tv ? s.t('creator_label') : s.t('director_label')} ${_details!.directorsOrCreators.join(', ')}',
                 style: const TextStyle(color: StarFilmColors.textSecondary),
               ),
             ],
             if (_details?.cast.isNotEmpty == true) ...[
               const SizedBox(height: 6),
               Text(
-                _details!.cast.join(', '),
+                '${s.t('cast_label')} ${_details!.cast.join(', ')}',
                 style: const TextStyle(color: StarFilmColors.textSecondary, fontSize: 13),
               ),
             ],
@@ -705,24 +723,13 @@ class _MediaDetailsSheetState extends ConsumerState<MediaDetailsSheet> {
     required List<int> genreIds,
     required double? tmdbRating,
   }) async {
-    final ctrl = TextEditingController();
     final createdName = await showDialog<String>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: StarFilmColors.surface,
-        title: Text(dialogTitle),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          decoration: InputDecoration(hintText: hintLabel),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: Text(cancelLabel)),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, ctrl.text),
-            child: Text(okLabel),
-          ),
-        ],
+      builder: (_) => _CreateCollectionDialog(
+        dialogTitle: dialogTitle,
+        hintLabel: hintLabel,
+        cancelLabel: cancelLabel,
+        okLabel: okLabel,
       ),
     );
     if (createdName == null || createdName.trim().isEmpty) return;
@@ -781,6 +788,19 @@ class _MediaDetailsSheetState extends ConsumerState<MediaDetailsSheet> {
           SnackBar(content: Text(s.t('startv_sent'))),
         );
       }
+    } on StarTvException catch (e) {
+      if (mounted) {
+        if (e.statusCode == 401 || e.statusCode == 403) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(s.t('startv_error_auth'))),
+          );
+          await StarTvPairingDialog.show(context);
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(s.t('startv_error_network'))),
+          );
+        }
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -788,5 +808,55 @@ class _MediaDetailsSheetState extends ConsumerState<MediaDetailsSheet> {
         );
       }
     }
+  }
+}
+
+class _CreateCollectionDialog extends StatefulWidget {
+  const _CreateCollectionDialog({
+    required this.dialogTitle,
+    required this.hintLabel,
+    required this.cancelLabel,
+    required this.okLabel,
+  });
+
+  final String dialogTitle;
+  final String hintLabel;
+  final String cancelLabel;
+  final String okLabel;
+
+  @override
+  State<_CreateCollectionDialog> createState() => _CreateCollectionDialogState();
+}
+
+class _CreateCollectionDialogState extends State<_CreateCollectionDialog> {
+  final _ctrl = TextEditingController();
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: StarFilmColors.surface,
+      title: Text(widget.dialogTitle),
+      content: TextField(
+        controller: _ctrl,
+        autofocus: true,
+        decoration: InputDecoration(hintText: widget.hintLabel),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: Text(widget.cancelLabel),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, _ctrl.text),
+          child: Text(widget.okLabel),
+        ),
+      ],
+    );
   }
 }

@@ -18,10 +18,8 @@ import 'package:starfilm/core/security/log_sanitizer.dart';
 import 'package:starfilm/core/security/secret_store.dart';
 import 'package:starfilm/features/cloud_sync/firebase_sync_adapter.dart';
 import 'package:starfilm/features/details/details_sheet.dart';
-import 'package:starfilm/features/discovery/discovery_models.dart';
 import 'package:starfilm/features/discovery/discovery_service.dart';
 import 'package:starfilm/features/discovery/gemini_client.dart';
-import 'package:starfilm/features/discovery/match_swipe_sheet.dart';
 import 'package:starfilm/features/library/library_repository.dart';
 import 'package:starfilm/features/library/rating_csv_import.dart';
 import 'package:starfilm/features/players/mobile_players.dart';
@@ -390,53 +388,6 @@ Unknown Unmatched Film;1995;7
     }
   });
 
-  testWidgets('MatchSwipeSheet runs two-player swipe turn and finds mutual match',
-      (tester) async {
-    final s = AppStrings('en');
-    const cards = [
-      RecommendationCard(
-        mediaType: MediaType.movie,
-        tmdbId: 27205,
-        title: 'Inception',
-        originalTitle: 'Inception',
-        year: 2010,
-        posterPath: '',
-        genreIds: [28],
-        tmdbRating: 8.4,
-        reason: 'Mind-bending heist',
-      ),
-    ];
-
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: MatchSwipeSheet(cards: cards, strings: s),
-        ),
-      ),
-    );
-    await tester.pumpAndSettle();
-
-    expect(find.text('Player 1 turn • 1/1'), findsOneWidget);
-    expect(find.text('Inception'), findsOneWidget);
-
-    // Player 1 likes card.
-    await tester.tap(find.byIcon(Icons.favorite));
-    await tester.pumpAndSettle();
-
-    // Handoff screen between Player 1 and Player 2.
-    expect(find.text('Hand the phone to Player 2'), findsOneWidget);
-    await tester.tap(find.text('Start Player 2 turn'));
-    await tester.pumpAndSettle();
-
-    // Player 2 likes same card -> mutual match.
-    expect(find.text('Player 2 turn • 1/1'), findsOneWidget);
-    await tester.tap(find.byIcon(Icons.favorite));
-    await tester.pumpAndSettle();
-
-    expect(find.text('It’s a Match! (1)'), findsOneWidget);
-    expect(find.text('Inception'), findsOneWidget);
-  });
-
   testWidgets('MediaDetailsSheet displays Kinopoisk, IMDb, and Movie Digital Release badges',
       (tester) async {
     SharedPreferences.setMockInitialValues({
@@ -607,18 +558,6 @@ Unknown Unmatched Film;1995;7
       'csv_import_run',
       'csv_import_progress',
       'csv_import_done',
-      'match_swipe_btn',
-      'match_swipe_title',
-      'match_player_turn',
-      'match_hand_off',
-      'match_hand_off_desc',
-      'match_start_p2',
-      'match_like',
-      'match_skip',
-      'match_found_title',
-      'match_none_title',
-      'match_none_desc',
-      'match_open_details',
       'release_alerts_toggle',
       'release_alerts_desc',
       'release_check_now',
