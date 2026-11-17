@@ -348,16 +348,93 @@ void main() {
       throwsA(isA<TmdbHttpException>()),
     );
 
+    expect(GeminiClient.normalizeModel('gemini-3.5-flash-lite'), 'gemini-2.5-flash-lite');
+    expect(GeminiClient.normalizeModel('gemini-3.8-flash'), 'gemini-2.5-flash-lite');
+
     final gemini = GeminiClient(client);
     final candidates = await gemini.generateCandidates(
       apiKey: 'AIzaTest',
-      model: 'gemini-2.5-flash-lite',
+      model: 'gemini-3.5-flash-lite',
       request: const DiscoveryRequest(prompt: 'Sci-fi'),
       profile: UserProfile(id: 'main', name: 'Головний'),
       library: const [],
       recentShownLabels: const [],
     );
     expect(candidates, hasLength(1));
-    expect(requestedGeminiModels.any((p) => p.contains('gemini-3.5-flash-lite')), isTrue);
+    expect(requestedGeminiModels.any((p) => p.contains('gemini-2.5-flash-lite')), isTrue);
+    expect(requestedGeminiModels.any((p) => p.contains('gemini-2.5-flash:')), isTrue);
+  });
+
+  test('TmdbMatcher.phoneticLatinQuery and DiscoveryService resolve Cyrillic loanwords like "стрит файтер"',
+      () async {
+    expect(TmdbMatcher.phoneticLatinQuery('стрит файтер'), 'street fighter');
+    expect(TmdbMatcher.phoneticLatinQuery('мортал комбат 1995'), 'mortal kombat 1995');
+    expect(
+      TmdbMatcher.titlesMatch('Street Fighter', 'Street Fighter: Вуличний боєць'),
+      isTrue,
+    );
+    expect(
+      TmdbMatcher.titlesMatch('Вуличний боєць', 'Street Fighter: Вуличний боєць'),
+      isTrue,
+    );
+
+    final searchedQueries = <String>[];
+    final mockHttp = MockClient((req) async {
+      if (req.url.host == 'api.tmdb.org' && req.url.path == '/3/search/multi') {
+        final q = req.url.queryParameters['query'] ?? '';
+        searchedQueries.add(q);
+        if (q.toLowerCase() == 'street fighter') {
+          return http.Response.bytes(
+            utf8.encode(jsonEncode({
+              'results': [
+                {
+                  'id': 11667,
+                  'media_type': 'movie',
+                  'title': 'Вуличний боєць',
+                  'original_title': 'Street Fighter',
+                  'release_date': '1994-12-23',
+                  'poster_path': '/sf.jpg',
+                  'genre_ids': [28, 12],
+                  'vote_average': 5.1,
+                  'popularity': 40,
+                }
+              ]
+            })),
+            200,
+            headers: {'content-type': 'application/json; charset=utf-8'},
+          );
+        }
+        return http.Response(jsonEncode({'results': []}), 200);
+      }
+      if (req.url.host == 'api.tmdb.org' && req.url.path.startsWith('/3/discover/')) {
+        return http.Response(jsonEncode({'results': []}), 200);
+      }
+      return http.Response('{}', 404);
+    });
+
+    final client = StarFilmHttpClient(client: mockHttp);
+    final tmdb = TmdbClient(client);
+    final searchRes = await tmdb.searchMulti(
+      apiKey: 'TMDB_OK',
+      query: 'стрит файтер',
+      contentLanguage: 'uk',
+    );
+    expect(searchRes.map((e) => e.tmdbId), [11667]);
+    expect(searchedQueries, ['стрит файтер', 'street fighter']);
+
+    final service = DiscoveryService(gemini: GeminiClient(client), tmdb: tmdb);
+    final recRes = await service.recommend(
+      tmdbApiKey: 'TMDB_OK',
+      geminiApiKey: '',
+      geminiModel: GeminiClient.fallbackModel,
+      request: const DiscoveryRequest(prompt: 'стрит файтер'),
+      profile: UserProfile(id: 'main', name: 'Головний'),
+      library: const [],
+      recentShownIds: const {},
+      recentShownLabels: const [],
+    );
+    expect(recRes.usedFallback, isTrue);
+    expect(recRes.cards.first.tmdbId, 11667);
+    expect(recRes.cards.first.title, 'Вуличний боєць');
   });
 }

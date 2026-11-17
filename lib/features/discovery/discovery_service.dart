@@ -56,10 +56,10 @@ class DiscoveryService {
 
     final verified = <RecommendationCard>[];
     final addedKeys = <String>{};
-    var usedFallback = false;
+    var geminiFailed = geminiApiKey.trim().isEmpty;
     String? fallbackReason;
 
-    // Step 1: Single Gemini call if key is available.
+    // Step 1: Gemini call if key is available.
     if (geminiApiKey.trim().isNotEmpty) {
       try {
         final candidates = await _gemini.generateCandidates(
@@ -74,21 +74,39 @@ class DiscoveryService {
         // Step 2: Parallel TMDB verification (omit hard ?year= so +-1 year matcher works).
         final verifiedList = await Future.wait(
           candidates.take(12).map((cand) async {
-            final searchQuery =
+            final primaryQuery =
                 cand.originalTitle.isNotEmpty ? cand.originalTitle : cand.title;
-            final results = await _tmdb.searchTyped(
+            var results = await _tmdb.searchTyped(
               apiKey: tmdbApiKey,
               mediaType: cand.mediaType,
-              query: searchQuery,
+              query: primaryQuery,
               contentLanguage: contentLang,
             );
-            final matched = TmdbMatcher.pickBestMatch(
+            var matched = TmdbMatcher.pickBestMatch(
               title: cand.title,
               originalTitle: cand.originalTitle,
               year: cand.year,
               preferredType: cand.mediaType,
               results: results,
             );
+            if (matched == null &&
+                cand.originalTitle.isNotEmpty &&
+                cand.title.isNotEmpty &&
+                cand.title != cand.originalTitle) {
+              results = await _tmdb.searchTyped(
+                apiKey: tmdbApiKey,
+                mediaType: cand.mediaType,
+                query: cand.title,
+                contentLanguage: contentLang,
+              );
+              matched = TmdbMatcher.pickBestMatch(
+                title: cand.title,
+                originalTitle: cand.originalTitle,
+                year: cand.year,
+                preferredType: cand.mediaType,
+                results: results,
+              );
+            }
             if (matched == null) return null;
             int? runtimeMinutes;
             if (maxRuntime != null && matched.mediaType == MediaType.movie) {
@@ -134,26 +152,74 @@ class DiscoveryService {
           );
         }
       } on GeminiQuotaException catch (e) {
-        usedFallback = true;
+        geminiFailed = true;
         fallbackReason = e.message;
         _log?.warn('Gemini fallback triggered: ${e.message}');
       } catch (e) {
-        usedFallback = true;
+        geminiFailed = true;
         fallbackReason = e.toString();
         _log?.warn('Gemini error, falling back to TMDB discover: $e');
       }
     } else {
-      usedFallback = true;
+      geminiFailed = true;
       fallbackReason = 'No Gemini key';
+    }
+
+    final usedFallback = geminiFailed || verified.isEmpty;
+
+    // Step 2.5: Direct TMDB title search for user prompt when < 4 cards verified.
+    final promptText = request.prompt.trim();
+    if (verified.length < 4 &&
+        promptText.isNotEmpty &&
+        tmdbApiKey.trim().isNotEmpty) {
+      try {
+        final directResults = await _tmdb.searchMulti(
+          apiKey: tmdbApiKey,
+          query: promptText,
+          contentLanguage: contentLang,
+        );
+        final directCards = <RecommendationCard>[];
+        for (final item in directResults) {
+          if (directCards.length + verified.length >= 8) break;
+          if (request.mediaTypeFilter != null &&
+              item.mediaType != request.mediaTypeFilter) {
+            continue;
+          }
+          final key = MediaKey(item.mediaType, item.tmdbId).value;
+          if (excludedMediaKeys.contains(key) || addedKeys.contains(key)) continue;
+          if (item.genreIds.any(excludedGenres.contains)) continue;
+          addedKeys.add(key);
+          directCards.add(
+            RecommendationCard(
+              mediaType: item.mediaType,
+              tmdbId: item.tmdbId,
+              title: item.title,
+              originalTitle: item.originalTitle,
+              year: item.year,
+              posterPath: item.posterPath,
+              genreIds: item.genreIds,
+              tmdbRating: item.voteAverage > 0 ? item.voteAverage : null,
+              reason: 'TMDB',
+              fromFallback: true,
+            ),
+          );
+        }
+        if (directCards.isNotEmpty) {
+          verified.insertAll(0, directCards);
+        }
+      } catch (e) {
+        _log?.warn('TMDB direct prompt search skipped: $e');
+      }
     }
 
     // Step 3: Free TMDB /discover backfill if < 4 cards verified.
     if (verified.length < 4 && tmdbApiKey.trim().isNotEmpty) {
-      usedFallback = true;
       final targetTypes = request.mediaTypeFilter != null
           ? [request.mediaTypeFilter!]
           : [MediaType.movie, MediaType.tv];
       final presetGenres = _presetGenres(request.preset);
+      final effectiveGenres =
+          presetGenres.isNotEmpty ? presetGenres : _inferGenresFromPrompt(promptText);
       final safePage = discoverPage.clamp(1, 20);
 
       for (final type in targetTypes) {
@@ -164,7 +230,7 @@ class DiscoveryService {
             apiKey: tmdbApiKey,
             mediaType: type,
             contentLanguage: contentLang,
-            withGenres: presetGenres,
+            withGenres: effectiveGenres,
             withoutGenres: excludedGenres.toList(),
             maxRuntimeMinutes: maxRuntime,
             minRating: 6.5,
@@ -206,6 +272,60 @@ class DiscoveryService {
       usedFallback: usedFallback,
       fallbackReason: fallbackReason,
     );
+  }
+
+  List<int> _inferGenresFromPrompt(String prompt) {
+    final low = prompt.toLowerCase();
+    if (low.isEmpty) return const [];
+    if (low.contains('комед') || low.contains('comedy') || low.contains('смішн') || low.contains('смешн')) {
+      return const [35];
+    }
+    if (low.contains('фантаст') || low.contains('sci-fi') || low.contains('scifi') || low.contains('космос')) {
+      return const [878];
+    }
+    if (low.contains('жах') || low.contains('ужас') || low.contains('horror') || low.contains('страшн')) {
+      return const [27];
+    }
+    if (low.contains('трил') || low.contains('thriller') || low.contains('саспенс')) {
+      return const [53];
+    }
+    if (low.contains('детектив') || low.contains('detective') || low.contains('кримін') || low.contains('кримин')) {
+      return const [9648, 80];
+    }
+    if (low.contains('мульт') || low.contains('анімац') || low.contains('анимац') || low.contains('anime')) {
+      return const [16];
+    }
+    if (low.contains('сімейн') || low.contains('семейн') || low.contains('family')) {
+      return const [10751];
+    }
+    if (low.contains('пригод') || low.contains('приключ') || low.contains('adventur')) {
+      return const [12];
+    }
+    if (low.contains('бойовик') ||
+        low.contains('боевик') ||
+        low.contains('action') ||
+        low.contains('екшн') ||
+        low.contains('экшн') ||
+        low.contains('файтер') ||
+        low.contains('fighter')) {
+      return const [28];
+    }
+    if (low.contains('фентез') || low.contains('фэнтез') || low.contains('fantasy')) {
+      return const [14];
+    }
+    if (low.contains('драм') || low.contains('drama')) {
+      return const [18];
+    }
+    if (low.contains('мелодрам') || low.contains('романт') || low.contains('romance')) {
+      return const [10749];
+    }
+    if (low.contains('істор') || low.contains('истор') || low.contains('history')) {
+      return const [36];
+    }
+    if (low.contains('документ') || low.contains('documentary')) {
+      return const [99];
+    }
+    return const [];
   }
 
   List<int> _presetGenres(EveningPreset? preset) {

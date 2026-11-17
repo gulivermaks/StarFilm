@@ -135,8 +135,34 @@ class TmdbClient {
     final q = query.trim();
     if (q.isEmpty || _normalizeToken(apiKey).isEmpty) return const [];
     final locale = toTmdbLocale(contentLanguage);
+    var out = await _runSearchMulti(
+      apiKey: apiKey,
+      query: q,
+      locale: locale,
+      yearHint: yearHint,
+    );
+    if (out.isEmpty) {
+      final phonetic = TmdbMatcher.phoneticLatinQuery(q);
+      if (phonetic.isNotEmpty && phonetic.toLowerCase() != q.toLowerCase()) {
+        out = await _runSearchMulti(
+          apiKey: apiKey,
+          query: phonetic,
+          locale: locale,
+          yearHint: yearHint,
+        );
+      }
+    }
+    return out;
+  }
+
+  Future<List<TmdbSearchCandidate>> _runSearchMulti({
+    required String apiKey,
+    required String query,
+    required String locale,
+    int? yearHint,
+  }) async {
     final res = await _get(apiKey, '/3/search/multi', {
-      'query': q,
+      'query': query,
       'language': locale,
       'include_adult': 'false',
     });
@@ -168,9 +194,39 @@ class TmdbClient {
   }) async {
     final q = query.trim();
     if (q.isEmpty || _normalizeToken(apiKey).isEmpty) return const [];
+    final locale = toTmdbLocale(contentLanguage);
+    var out = await _runSearchTyped(
+      apiKey: apiKey,
+      mediaType: mediaType,
+      query: q,
+      locale: locale,
+      year: year,
+    );
+    if (out.isEmpty) {
+      final phonetic = TmdbMatcher.phoneticLatinQuery(q);
+      if (phonetic.isNotEmpty && phonetic.toLowerCase() != q.toLowerCase()) {
+        out = await _runSearchTyped(
+          apiKey: apiKey,
+          mediaType: mediaType,
+          query: phonetic,
+          locale: locale,
+          year: year,
+        );
+      }
+    }
+    return out;
+  }
+
+  Future<List<TmdbSearchCandidate>> _runSearchTyped({
+    required String apiKey,
+    required MediaType mediaType,
+    required String query,
+    required String locale,
+    int? year,
+  }) async {
     final params = <String, String>{
-      'query': q,
-      'language': toTmdbLocale(contentLanguage),
+      'query': query,
+      'language': locale,
       'include_adult': 'false',
     };
     if (year != null && year > 1880) {

@@ -126,6 +126,20 @@ class SettingsScreen extends ConsumerStatefulWidget {
     );
   }
 
+  /// Formats GitHub release notes by stripping raw Markdown symbols for readable dialog display.
+  static String formatReleaseNotes(String raw) {
+    final lines = raw.trim().split('\n');
+    final cleaned = <String>[];
+    for (final line in lines) {
+      var text = line.trimRight();
+      text = text.replaceFirst(RegExp(r'^\s*#{1,6}\s*'), '');
+      text = text.replaceFirst(RegExp(r'^\s*[-*]\s+'), '• ');
+      text = text.replaceAll('**', '').replaceAll('`', '');
+      cleaned.add(text);
+    }
+    return cleaned.join('\n').replaceAll(RegExp(r'\n{3,}'), '\n\n').trim();
+  }
+
   /// Displays release details with in-app SHA-256 and certificate-verified
   /// APK installation plus an external browser fallback link.
   static Future<void> showUpdateAvailableDialog(
@@ -137,7 +151,7 @@ class SettingsScreen extends ConsumerStatefulWidget {
     Future<String> Function(String apkPath)? onInstallApk,
     Future<bool> Function(Uri uri)? onOpenBrowser,
   }) {
-    final notes = release.releaseNotes.trim();
+    final notes = formatReleaseNotes(release.releaseNotes);
     var downloading = false;
     var verifying = false;
     double? progress;
@@ -800,7 +814,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       builder: (_) => _SingleTextDialog(
         title: s.t('custom_gemini_title'),
         initialValue: currentModel,
-        hintText: 'gemini-3.5-pro',
+        hintText: 'gemini-2.5-pro',
         cancelLabel: s.t('cancel'),
         okLabel: s.t('save'),
       ),

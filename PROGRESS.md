@@ -247,8 +247,15 @@
 - [x] **Firestore Rules & README**: в `firestore.rules` добавлена валидация `collectionId` по регулярному выражению `^[A-Za-z0-9_-]{1,48}$` (добавлен тест в `tools/firestore_rules_test/rules.test.mjs`). `README.md` переписан на украинском языке с актуальным описанием и логотипами.
 - [x] **Проверки**: `flutter analyze` (0 замечаний), `flutter test` (63/63, включая `dual_sync_and_tv_fixes_test.dart`), эмулятор Firestore (`4/4`).
 
+### v0.12 — Исправление OTA-проверки подписи, Gemini моделей и поиска (2026-11-17)
+- [x] **OTA-установка и проверка подписи**: в `android/app/build.gradle.kts` включены `enableV1Signing = true` и `enableV2Signing = true`; в `MainActivity.kt` (`getInstalledSigningSha256`, `getArchiveSigningSha256`, `extractCertSha256`) добавлена комбинированная проверка `GET_SIGNING_CERTIFICATES | GET_SIGNATURES` и резервное чтение сертификатов из `JarFile` (`META-INF/*.RSA|DSA|EC`).
+- [x] **Диалог обновления**: в `SettingsScreen.formatReleaseNotes` добавлена очистка сырого Markdown (`##`, `**`, `` ` ``, `- ` -> `• `) для читаемого отображения заметок релиза.
+- [x] **Gemini модели и язык контента**: в `GeminiClient` и `AppController` заменены устаревшие/несуществующие `3.x`-идентификаторы на `gemini-2.5-flash-lite` с автоматическим фолбэком `gemini-2.5-flash-lite` → `gemini-2.5-flash` → `gemini-flash-lite-latest`, нормализацией сохранённых настроек в `bootstrap()` и синхронизацией `contentLanguage` активного профиля в `setUiLanguage`.
+- [x] **Умный поиск и фонетическая транслитерация**: в `TmdbMatcher.phoneticLatinQuery` и `TmdbClient` добавлена транслитерация запросов вроде `стрит файтер` → `street fighter`; в `DiscoveryService` добавлен прямой поиск по `prompt`, автоопределение жанров по запросу для backfill и исправлено условие `usedFallback`.
+- [x] **Проверки**: `flutter analyze` (0 замечаний), `flutter test` (65/65).
+
 ### Следующий шаг
-- Подготовить публикацию `v0.11` (`versionCode=11`) на GitHub в связке со **StarTV `v0.8`** (`versionCode=62`); при необходимости выполнить живую проверку OTA, ручного ввода `IP:port` и сканирования QR на связке Pixel XL / Samsung S26 Ultra + Tanix W2.
+- Обновить приложение на тестовом телефоне Pixel XL (`HT6AD0200687`) и опубликовать релиз `v0.12` (`versionCode=12`) на GitHub.
 
 ---
 

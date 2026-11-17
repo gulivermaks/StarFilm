@@ -21,19 +21,34 @@ class GeminiClient {
   final StarFilmHttpClient _http;
 
   static const String host = 'generativelanguage.googleapis.com';
-  static const String fallbackModel = 'gemini-3.5-flash-lite';
+  static const String fallbackModel = 'gemini-2.5-flash-lite';
   static const List<String> defaultModels = [
-    'gemini-3.5-flash-lite',
-    'gemini-3.8-flash',
-    'gemini-3.6-flash',
     'gemini-2.5-flash-lite',
     'gemini-2.5-flash',
+    'gemini-flash-lite-latest',
+    'gemini-2.5-pro',
   ];
+  static const Set<String> _retiredOrInvalidModels = {
+    'gemini-3.5-flash-lite',
+    'gemini-3.6-flash',
+    'gemini-3.8-flash',
+    'gemini-3.5-pro',
+  };
+
+  /// Maps retired or unavailable 3.x placeholder IDs to the active default model.
+  static String normalizeModel(String? raw) {
+    final trimmed = raw?.trim() ?? '';
+    if (trimmed.isEmpty || _retiredOrInvalidModels.contains(trimmed)) {
+      return fallbackModel;
+    }
+    return trimmed;
+  }
 
   Future<bool> verifyKey(String apiKey, {String model = fallbackModel}) async {
     final key = apiKey.trim();
     if (key.isEmpty) return false;
-    final uri = Uri.https(host, '/v1beta/models/$model', {'key': key});
+    final resolvedModel = normalizeModel(model);
+    final uri = Uri.https(host, '/v1beta/models/$resolvedModel', {'key': key});
     final res = await _http.get(uri);
     if (res.isOk) return true;
     if (res.statusCode == 404) {
@@ -44,8 +59,7 @@ class GeminiClient {
     return false;
   }
 
-  /// Executes at most ONE Gemini call per user request (with single fallback to current default model
-  /// only on 404/model unavailability, never cascading double recommendations).
+  /// Executes Gemini request with fallback across stable models on 404 / 429 / 5xx.
   Future<List<GeminiCandidate>> generateCandidates({
     required String apiKey,
     required String model,
@@ -72,35 +86,48 @@ class GeminiClient {
       compactPayload: promptPayload,
     );
 
-    var res = await _postGenerate(
-      key: key,
-      model: model,
-      temperature: request.different ? 0.95 : 0.7,
-      systemPrompt: systemPrompt,
-    );
-    if (res.statusCode == 404 && model != fallbackModel) {
-      res = await _postGenerate(
+    final modelsToTry = <String>{
+      normalizeModel(model),
+      'gemini-2.5-flash-lite',
+      'gemini-2.5-flash',
+      'gemini-flash-lite-latest',
+    }.toList();
+
+    HttpResult? okResult;
+    var lastStatus = 0;
+    for (final candidateModel in modelsToTry) {
+      final res = await _postGenerate(
         key: key,
-        model: fallbackModel,
+        model: candidateModel,
         temperature: request.different ? 0.95 : 0.7,
         systemPrompt: systemPrompt,
       );
-    }
-    if (res.statusCode == 429 || !res.isOk) {
+      if (res.isOk) {
+        okResult = res;
+        break;
+      }
+      lastStatus = res.statusCode;
+      if (res.statusCode == 404 || res.statusCode == 429 || res.statusCode >= 500) {
+        continue;
+      }
       throw GeminiQuotaException(res.statusCode, 'HTTP ${res.statusCode}');
     }
 
-    final decoded = jsonDecode(res.body);
+    if (okResult == null) {
+      throw GeminiQuotaException(lastStatus, 'HTTP $lastStatus');
+    }
+
+    final decoded = jsonDecode(okResult.body);
     if (decoded is! Map<String, dynamic>) return const [];
     final candidates = decoded['candidates'] as List<dynamic>? ?? const [];
     if (candidates.isEmpty) return const [];
     final content = (candidates.first as Map<String, dynamic>)['content'] as Map<String, dynamic>?;
     final parts = content?['parts'] as List<dynamic>? ?? const [];
-    if (parts.isEmpty) return const [];
-    final text = (parts.first as Map<String, dynamic>)['text']?.toString() ?? '';
+    final text = _extractResponseText(parts);
     if (text.trim().isEmpty) return const [];
 
-    final parsed = jsonDecode(text);
+    final cleanedText = _stripMarkdownCodeFence(text);
+    final parsed = jsonDecode(cleanedText);
     final rawList = parsed is Map<String, dynamic>
         ? (parsed['recommendations'] as List<dynamic>? ?? const [])
         : (parsed is List<dynamic> ? parsed : const []);
@@ -110,6 +137,29 @@ class GeminiClient {
         .map(GeminiCandidate.fromJson)
         .where((c) => c.title.isNotEmpty)
         .toList();
+  }
+
+  static String _extractResponseText(List<dynamic> parts) {
+    String? fallbackText;
+    for (var i = parts.length - 1; i >= 0; i--) {
+      final part = parts[i];
+      if (part is! Map<String, dynamic>) continue;
+      final text = part['text']?.toString() ?? '';
+      if (text.trim().isEmpty) continue;
+      fallbackText ??= text;
+      if (part['thought'] != true) {
+        return text;
+      }
+    }
+    return fallbackText ?? '';
+  }
+
+  static String _stripMarkdownCodeFence(String raw) {
+    var trimmed = raw.trim();
+    if (!trimmed.startsWith('```')) return trimmed;
+    trimmed = trimmed.replaceFirst(RegExp(r'^```[A-Za-z0-9_-]*\s*'), '');
+    trimmed = trimmed.replaceFirst(RegExp(r'\s*```$'), '');
+    return trimmed.trim();
   }
 
   static Map<String, dynamic> buildCompactPromptPayload({
@@ -200,6 +250,7 @@ class GeminiClient {
 Recommend 12 real, existing movies or TV series matching the JSON context below.
 Rules:
 - Never invent fictional titles. Provide accurate original_title and release year.
+- If userQuery names a specific movie, series, franchise, or phonetic/transliterated title (e.g. "стрит файтер" -> "Street Fighter"), put the exact matching titles from that franchise FIRST, followed by similar titles.
 - Never include anything from doNotRecommend, recentShown, or excludedGenres.$runtimeRule
 - Write title, genre, and a short spoiler-free reason (max 140 chars) in $langName.
 - If guestMode is true, ignore narrow personal preferences and focus on broad crowd-pleasing picks matching the request/preset.

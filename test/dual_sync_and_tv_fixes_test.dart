@@ -24,6 +24,7 @@ import 'package:starfilm/features/library/library_repository.dart';
 import 'package:starfilm/features/library/library_tab.dart';
 import 'package:starfilm/features/search/tmdb_client.dart';
 import 'package:starfilm/features/settings/ota_updater.dart';
+import 'package:starfilm/features/settings/settings_screen.dart';
 import 'package:starfilm/features/startv/startv_client.dart';
 import 'package:starfilm/features/startv/startv_models.dart';
 import 'package:starfilm/features/startv/startv_pairing_dialog.dart';
@@ -582,5 +583,18 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(requestedUris.any((u) => u.host == '192.168.1.50' && u.port == 8089), isTrue);
+  });
+
+  test('SettingsScreen.formatReleaseNotes strips Markdown tokens and preserves readable bullets', () {
+    const raw = '## Що нового у StarFilm v0.11\n\n'
+        '- **Брендинг:** оновлено `docs/logo.png` і логотип.\n'
+        '* **Синхронізація:** оновлює `installedPlayers`.';
+    final formatted = SettingsScreen.formatReleaseNotes(raw);
+    expect(formatted.contains('##'), isFalse);
+    expect(formatted.contains('**'), isFalse);
+    expect(formatted.contains('`'), isFalse);
+    expect(formatted, contains('Що нового у StarFilm v0.11'));
+    expect(formatted, contains('• Брендинг: оновлено docs/logo.png і логотип.'));
+    expect(formatted, contains('• Синхронізація: оновлює installedPlayers.'));
   });
 }

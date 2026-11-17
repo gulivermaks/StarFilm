@@ -20,6 +20,8 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
 import java.security.MessageDigest
+import java.security.cert.CertificateFactory
+import java.util.jar.JarFile
 
 class MainActivity : FlutterActivity() {
     companion object {
@@ -250,43 +252,109 @@ class MainActivity : FlutterActivity() {
 
     @Suppress("DEPRECATION")
     private fun getInstalledSigningSha256(): Set<String> {
-        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            PackageManager.GET_SIGNING_CERTIFICATES
+        val flagsList = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            listOf(
+                PackageManager.GET_SIGNING_CERTIFICATES or PackageManager.GET_SIGNATURES,
+                PackageManager.GET_SIGNING_CERTIFICATES,
+                PackageManager.GET_SIGNATURES
+            )
         } else {
-            PackageManager.GET_SIGNATURES
+            listOf(PackageManager.GET_SIGNATURES)
         }
-        val info = packageManager.getPackageInfo(packageName, flags)
-        return extractCertSha256(info)
+        val hashes = mutableSetOf<String>()
+        for (flags in flagsList) {
+            val info = try {
+                packageManager.getPackageInfo(packageName, flags)
+            } catch (_: Exception) {
+                null
+            }
+            if (info != null) {
+                hashes.addAll(extractCertSha256(info))
+            }
+            if (hashes.isNotEmpty()) break
+        }
+        return hashes
     }
 
     @Suppress("DEPRECATION")
     private fun getArchiveSigningSha256(apkPath: String): Set<String> {
-        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            PackageManager.GET_SIGNING_CERTIFICATES
+        val flagsList = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            listOf(
+                PackageManager.GET_SIGNING_CERTIFICATES or PackageManager.GET_SIGNATURES,
+                PackageManager.GET_SIGNING_CERTIFICATES,
+                PackageManager.GET_SIGNATURES
+            )
         } else {
-            PackageManager.GET_SIGNATURES
+            listOf(PackageManager.GET_SIGNATURES)
         }
-        val info = packageManager.getPackageArchiveInfo(apkPath, flags) ?: return emptySet()
-        return extractCertSha256(info)
+        val hashes = mutableSetOf<String>()
+        for (flags in flagsList) {
+            val info = try {
+                packageManager.getPackageArchiveInfo(apkPath, flags)
+            } catch (_: Exception) {
+                null
+            }
+            if (info != null) {
+                hashes.addAll(extractCertSha256(info))
+            }
+            if (hashes.isNotEmpty()) break
+        }
+        if (hashes.isNotEmpty()) return hashes
+
+        // Fallback: read v1 signing block certificates directly from META-INF/*.RSA|DSA|EC.
+        return try {
+            val certFactory = CertificateFactory.getInstance("X.509")
+            val digest = MessageDigest.getInstance("SHA-256")
+            val jarHashes = mutableSetOf<String>()
+            JarFile(apkPath, true).use { jar ->
+                val entries = jar.entries()
+                while (entries.hasMoreElements()) {
+                    val entry = entries.nextElement()
+                    val upper = entry.name.uppercase()
+                    if (!upper.startsWith("META-INF/") || entry.isDirectory) continue
+                    if (!upper.endsWith(".RSA") && !upper.endsWith(".DSA") && !upper.endsWith(".EC")) {
+                        continue
+                    }
+                    jar.getInputStream(entry).use { stream ->
+                        val certs = certFactory.generateCertificates(stream)
+                        for (cert in certs) {
+                            digest.reset()
+                            val hex = digest.digest(cert.encoded).joinToString("") { "%02x".format(it) }
+                            jarHashes.add(hex)
+                        }
+                    }
+                    entry.certificates?.forEach { cert ->
+                        digest.reset()
+                        val hex = digest.digest(cert.encoded).joinToString("") { "%02x".format(it) }
+                        jarHashes.add(hex)
+                    }
+                }
+            }
+            jarHashes
+        } catch (_: Exception) {
+            emptySet()
+        }
     }
 
     @Suppress("DEPRECATION")
     private fun extractCertSha256(info: PackageInfo): Set<String> {
-        val signatures = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            val signingInfo = info.signingInfo ?: return emptySet()
-            if (signingInfo.hasMultipleSigners()) {
-                signingInfo.apkContentsSigners
-            } else {
-                signingInfo.signingCertificateHistory
-            }
-        } else {
-            info.signatures
-        } ?: return emptySet()
-
         val digest = MessageDigest.getInstance("SHA-256")
-        return signatures.map { sig ->
+        val hashes = mutableSetOf<String>()
+
+        fun addRaw(rawBytes: ByteArray?) {
+            if (rawBytes == null || rawBytes.isEmpty()) return
             digest.reset()
-            digest.digest(sig.toByteArray()).joinToString("") { "%02x".format(it) }
-        }.toSet()
+            hashes.add(digest.digest(rawBytes).joinToString("") { "%02x".format(it) })
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            val signingInfo = info.signingInfo
+            if (signingInfo != null) {
+                signingInfo.apkContentsSigners?.forEach { addRaw(it.toByteArray()) }
+                signingInfo.signingCertificateHistory?.forEach { addRaw(it.toByteArray()) }
+            }
+        }
+        info.signatures?.forEach { addRaw(it.toByteArray()) }
+        return hashes
     }
 }

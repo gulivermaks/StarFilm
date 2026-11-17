@@ -44,7 +44,7 @@ class AppControllerState {
     this.tmdbKey = '',
     this.geminiKey = '',
     this.kinopoiskKey = '',
-    this.geminiModel = 'gemini-3.5-flash-lite',
+    this.geminiModel = 'gemini-2.5-flash-lite',
     this.preferredPlayer = MobilePlayerId.stremio,
     this.pairedDevices = const [],
     this.selectedTvId = '',
@@ -318,6 +318,11 @@ class AppController extends Notifier<AppControllerState> {
       final tvs = await _s.secrets.loadStarTvDevices();
       final pendingCount = await _s.repo.pendingChangesCount();
       final releaseAlerts = prefs.getBool(_prefReleaseAlerts) ?? true;
+      final savedGeminiModel = prefs.getString(_prefGeminiModel);
+      final normalizedGeminiModel = GeminiClient.normalizeModel(savedGeminiModel);
+      if (savedGeminiModel != normalizedGeminiModel) {
+        await prefs.setString(_prefGeminiModel, normalizedGeminiModel);
+      }
 
       state = state.copyWith(
         initialized: true,
@@ -330,7 +335,7 @@ class AppController extends Notifier<AppControllerState> {
         tmdbKey: tmdbKey,
         geminiKey: geminiKey,
         kinopoiskKey: kinopoiskKey,
-        geminiModel: prefs.getString(_prefGeminiModel) ?? 'gemini-3.5-flash-lite',
+        geminiModel: normalizedGeminiModel,
         preferredPlayer: MobilePlayerId.fromId(prefs.getString(_prefPlayer)),
         pairedDevices: tvs,
         selectedTvId: prefs.getString(_prefSelectedTv) ?? '',
@@ -514,6 +519,11 @@ class AppController extends Notifier<AppControllerState> {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_prefUiLang, normalized);
     state = state.copyWith(uiLanguage: normalized);
+    if (state.activeProfile.preferences.contentLanguage != normalized) {
+      await updateProfilePreferences(
+        state.activeProfile.preferences.copyWith(contentLanguage: normalized),
+      );
+    }
   }
 
   Future<void> setApiKeys({
@@ -610,9 +620,10 @@ class AppController extends Notifier<AppControllerState> {
   }
 
   Future<void> setGeminiModel(String model) async {
+    final normalized = GeminiClient.normalizeModel(model);
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_prefGeminiModel, model);
-    state = state.copyWith(geminiModel: model);
+    await prefs.setString(_prefGeminiModel, normalized);
+    state = state.copyWith(geminiModel: normalized);
   }
 
   Future<void> setPreferredPlayer(MobilePlayerId player) async {
