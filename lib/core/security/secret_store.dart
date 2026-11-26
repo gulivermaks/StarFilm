@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 
 import 'package:flutter/services.dart';
@@ -10,7 +11,8 @@ import '../../features/startv/startv_models.dart';
 /// Never uploaded to Firebase or written to logs/backups.
 class SecretStore {
   SecretStore({FlutterSecureStorage? storage})
-      : _storage = storage ??
+      : _hasExplicitStorage = storage != null,
+        _storage = storage ??
             const FlutterSecureStorage(
               aOptions: AndroidOptions(
                 encryptedSharedPreferences: true,
@@ -18,16 +20,25 @@ class SecretStore {
               ),
             );
 
+  final bool _hasExplicitStorage;
   final FlutterSecureStorage _storage;
+  final Map<String, String> _testMemory = <String, String>{};
+
+  bool get _useInMemoryTestStore =>
+      !_hasExplicitStorage && Platform.environment['FLUTTER_TEST'] == 'true';
 
   static const String _tmdbKey = 'starfilm.tmdb_api_key';
   static const String _geminiKey = 'starfilm.gemini_api_key';
+  static const String _backupAiKey = 'starfilm.backup_ai_key';
   static const String _kinopoiskKey = 'starfilm.kinopoisk_api_key';
   static const String _deviceIdKey = 'starfilm.device_id';
   static const String _starTvDevicesKey = 'starfilm.startv_devices';
   static const String _starTvTokenPrefix = 'starfilm.startv_token.';
 
   Future<String?> _safeRead(String key) async {
+    if (_useInMemoryTestStore) {
+      return _testMemory[key];
+    }
     try {
       return await _storage.read(key: key);
     } on MissingPluginException {
@@ -43,6 +54,10 @@ class SecretStore {
   }
 
   Future<void> _safeWrite(String key, String value) async {
+    if (_useInMemoryTestStore) {
+      _testMemory[key] = value;
+      return;
+    }
     try {
       await _storage.write(key: key, value: value);
     } on MissingPluginException {
@@ -56,6 +71,10 @@ class SecretStore {
   }
 
   Future<void> _safeDelete(String key) async {
+    if (_useInMemoryTestStore) {
+      _testMemory.remove(key);
+      return;
+    }
     try {
       await _storage.delete(key: key);
     } on MissingPluginException {
@@ -70,6 +89,10 @@ class SecretStore {
 
   Future<String> getGeminiKey() async => (await _safeRead(_geminiKey)) ?? '';
   Future<void> setGeminiKey(String value) => _safeWrite(_geminiKey, value.trim());
+
+  Future<String> getBackupAiKey() async => (await _safeRead(_backupAiKey)) ?? '';
+  Future<void> setBackupAiKey(String value) =>
+      _safeWrite(_backupAiKey, value.trim());
 
   Future<String> getKinopoiskKey() async => (await _safeRead(_kinopoiskKey)) ?? '';
   Future<void> setKinopoiskKey(String value) =>

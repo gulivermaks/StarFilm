@@ -456,6 +456,19 @@ void main() {
 
     expect(capturedLanguage, 'ru-RU');
     expect(find.text('Начало'), findsOneWidget);
+    expect(
+      find.descendant(of: find.byType(Card), matching: find.text('Inception')),
+      findsOneWidget,
+    );
+    expect(find.text('Точное совпадение'), findsOneWidget);
+
+    // Enabling a non-matching filter shows hidden-by-filters message + reset button
+    await tester.tap(find.text('Сериалы'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('результаты скрыты фильтрами'), findsOneWidget);
+    await tester.tap(find.text('Сбросить фильтры'));
+    await tester.pumpAndSettle();
+    expect(find.text('Начало'), findsOneWidget);
 
     await tester.tap(find.text('Хочу'));
     await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
@@ -753,6 +766,14 @@ void main() {
       'startv_error_lan',
       'startv_error_auth',
       'startv_error_network',
+      'backup_ai_key',
+      'backup_ai_hint',
+      'backup_ai_saved_provider',
+      'exact_match_badge',
+      'search_hidden_by_filters',
+      'reset_filters',
+      'pick_ai_no_key',
+      'pick_ai_fallback_reason',
     ];
     for (final lang in ['uk', 'ru', 'en']) {
       final s = AppStrings(lang);

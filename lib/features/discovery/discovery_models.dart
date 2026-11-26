@@ -74,6 +74,7 @@ class RecommendationCard {
     required this.reason,
     this.runtimeMinutes,
     this.fromFallback = false,
+    this.isExactMatch = false,
   });
 
   final MediaType mediaType;
@@ -87,6 +88,7 @@ class RecommendationCard {
   final String reason;
   final int? runtimeMinutes;
   final bool fromFallback;
+  final bool isExactMatch;
 
   MediaKey get mediaKey => MediaKey(mediaType, tmdbId);
 }

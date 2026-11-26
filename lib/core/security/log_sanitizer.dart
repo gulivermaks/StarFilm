@@ -10,6 +10,9 @@ class LogSanitizer {
     caseSensitive: false,
   );
   static final RegExp _googleKeyPattern = RegExp(r'AIza[0-9A-Za-z\-_]{20,}');
+  static final RegExp _groqKeyPattern = RegExp(r'gsk_[0-9A-Za-z\-_]{16,}');
+  static final RegExp _openRouterKeyPattern =
+      RegExp(r'sk-or-(?:v1-)?[0-9A-Za-z\-_]{16,}');
   static final RegExp _uuidKeyPattern = RegExp(
     r'\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b',
   );
@@ -20,6 +23,8 @@ class LogSanitizer {
     out = out.replaceAllMapped(_bearerPattern, (m) => '${m[1]}***');
     out = out.replaceAllMapped(_queryKeyPattern, (m) => '${m[1]}***');
     out = out.replaceAll(_googleKeyPattern, 'AIza***');
+    out = out.replaceAll(_groqKeyPattern, 'gsk_***');
+    out = out.replaceAll(_openRouterKeyPattern, 'sk-or-***');
     out = out.replaceAll(_uuidKeyPattern, '***');
     out = out.replaceAll(_hexTokenPattern, '***');
     return out;

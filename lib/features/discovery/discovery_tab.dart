@@ -7,7 +7,9 @@ import '../../core/models/media_key.dart';
 import '../../core/platform/device_bridge.dart';
 import '../details/details_sheet.dart';
 import '../search/tmdb_client.dart';
+import '../search/tmdb_matcher.dart';
 import 'discovery_models.dart';
+import 'gemini_client.dart';
 
 class DiscoveryTab extends ConsumerStatefulWidget {
   const DiscoveryTab({super.key});
@@ -203,7 +205,7 @@ class _DiscoveryTabState extends ConsumerState<DiscoveryTab> {
         if (state.usedFallback && state.recommendations.isNotEmpty) ...[
           const SizedBox(height: 10),
           Text(
-            s.t('pick_ai_fallback'),
+            _fallbackBannerText(state),
             style: const TextStyle(color: StarFilmColors.textSecondary, fontSize: 12),
           ),
         ],
@@ -257,10 +259,53 @@ class _DiscoveryTabState extends ConsumerState<DiscoveryTab> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      card.title,
-                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 4,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        Text(
+                          card.title,
+                          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+                        ),
+                        if (card.isExactMatch)
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 2,
+                            ),
+                            decoration: BoxDecoration(
+                              color: StarFilmColors.lime.withValues(alpha: 0.16),
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(
+                                color: StarFilmColors.lime.withValues(alpha: 0.5),
+                              ),
+                            ),
+                            child: Text(
+                              s.t('exact_match_badge'),
+                              style: const TextStyle(
+                                color: StarFilmColors.lime,
+                                fontSize: 10,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                      ],
                     ),
+                    if (card.originalTitle.isNotEmpty &&
+                        TmdbMatcher.normalizeTitle(card.originalTitle) !=
+                            TmdbMatcher.normalizeTitle(card.title)) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        card.originalTitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: StarFilmColors.textSecondary,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
                     const SizedBox(height: 4),
                     Text(
                       [
@@ -345,6 +390,22 @@ class _DiscoveryTabState extends ConsumerState<DiscoveryTab> {
       color: StarFilmColors.surfaceElevated,
       child: const Icon(Icons.movie, color: StarFilmColors.textSecondary),
     );
+  }
+
+  String _fallbackBannerText(AppControllerState state) {
+    final s = state.strings;
+    final hasAnyAiKey = state.geminiKey.trim().isNotEmpty ||
+        GeminiClient.parseKeyList(state.backupAiKey).isNotEmpty;
+    if (!hasAnyAiKey) {
+      return s.t('pick_ai_no_key');
+    }
+    final reason = state.lastFallbackReason.trim();
+    if (reason.isNotEmpty &&
+        reason != 'No Gemini key' &&
+        reason != 'No AI key') {
+      return s.t('pick_ai_fallback_reason', {'reason': reason});
+    }
+    return s.t('pick_ai_fallback');
   }
 
   String _presetLabel(dynamic s, EveningPreset preset) {

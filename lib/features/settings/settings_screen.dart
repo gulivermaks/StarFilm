@@ -23,7 +23,7 @@ import '../startv/startv_client.dart';
 import '../startv/startv_pairing_dialog.dart';
 import 'ota_updater.dart';
 
-enum _SettingsKeyKind { tmdb, gemini, kinopoisk }
+enum _SettingsKeyKind { tmdb, gemini, backupAi, kinopoisk }
 
 class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
@@ -415,6 +415,24 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             ),
             trailing: const Icon(Icons.edit),
             onTap: () => _editKeyDialog(kind: _SettingsKeyKind.gemini, current: state.geminiKey),
+          ),
+          ListTile(
+            title: Text(s.t('backup_ai_key')),
+            subtitle: Text(
+              state.backupAiKey.trim().isEmpty
+                  ? s.t('key_missing')
+                  : s.t('backup_ai_saved_provider', {
+                      'provider': GeminiClient.parseKeyList(state.backupAiKey)
+                          .map((k) => GeminiClient.detectProvider(k).displayLabel)
+                          .toSet()
+                          .join(', '),
+                    }),
+            ),
+            trailing: const Icon(Icons.edit),
+            onTap: () => _editKeyDialog(
+              kind: _SettingsKeyKind.backupAi,
+              current: state.backupAiKey,
+            ),
           ),
           ListTile(
             title: Text(s.t('kp_key')),
@@ -814,7 +832,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       builder: (_) => _SingleTextDialog(
         title: s.t('custom_gemini_title'),
         initialValue: currentModel,
-        hintText: 'gemini-2.5-pro',
+        hintText: GeminiClient.fallbackModel,
         cancelLabel: s.t('cancel'),
         okLabel: s.t('save'),
       ),
@@ -832,11 +850,13 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     final title = switch (kind) {
       _SettingsKeyKind.tmdb => s.t('tmdb_key'),
       _SettingsKeyKind.gemini => s.t('gemini_key'),
+      _SettingsKeyKind.backupAi => s.t('backup_ai_key'),
       _SettingsKeyKind.kinopoisk => s.t('kp_key'),
     };
     final hint = switch (kind) {
       _SettingsKeyKind.tmdb => s.t('tmdb_key_hint'),
       _SettingsKeyKind.gemini => 'AIza...',
+      _SettingsKeyKind.backupAi => s.t('backup_ai_hint'),
       _SettingsKeyKind.kinopoisk => 'UUID / X-API-KEY',
     };
 
@@ -847,6 +867,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         hint: hint,
         initialValue: current,
         strings: s,
+        multiline: kind == _SettingsKeyKind.backupAi,
         verifyCallback: (val) async {
           final services = ref.read(appServicesProvider);
           return switch (kind) {
@@ -855,6 +876,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 val,
                 model: ref.read(appControllerProvider).geminiModel,
               ),
+            _SettingsKeyKind.backupAi => services.gemini.verifyBackupKey(val),
             _SettingsKeyKind.kinopoisk => services.kinopoisk.verifyKey(val),
           };
         },
@@ -864,6 +886,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       await ref.read(appControllerProvider.notifier).setApiKeys(
             tmdbKey: kind == _SettingsKeyKind.tmdb ? next : null,
             geminiKey: kind == _SettingsKeyKind.gemini ? next : null,
+            backupAiKey: kind == _SettingsKeyKind.backupAi ? next : null,
             kinopoiskKey: kind == _SettingsKeyKind.kinopoisk ? next : null,
           );
     }
@@ -1091,9 +1114,15 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       'entries': state.entries.length,
       'tv': state.activeTv?.deviceName ?? no,
     });
+    final backupProviders = GeminiClient.parseKeyList(state.backupAiKey)
+        .map((k) => GeminiClient.detectProvider(k).displayLabel)
+        .toSet()
+        .join('/');
+    final backupLine =
+        'Backup AI: ${backupProviders.isNotEmpty ? backupProviders : no} • Model: ${state.geminiModel}';
     final logText = ref.read(appServicesProvider).log.exportText();
     final body = logText.isEmpty ? s.t('diagnostics_empty') : logText;
-    final fullReport = '$statusLine\n\n$body';
+    final fullReport = '$statusLine\n$backupLine\n\n$body';
     showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -1226,6 +1255,7 @@ class _EditKeyDialog extends StatefulWidget {
     required this.initialValue,
     required this.strings,
     required this.verifyCallback,
+    this.multiline = false,
   });
 
   final String title;
@@ -1233,6 +1263,7 @@ class _EditKeyDialog extends StatefulWidget {
   final String initialValue;
   final AppStrings strings;
   final Future<bool> Function(String val) verifyCallback;
+  final bool multiline;
 
   @override
   State<_EditKeyDialog> createState() => _EditKeyDialogState();
@@ -1264,6 +1295,8 @@ class _EditKeyDialogState extends State<_EditKeyDialog> {
           TextField(
             controller: _ctrl,
             autofocus: true,
+            minLines: 1,
+            maxLines: widget.multiline ? 3 : 1,
             decoration: InputDecoration(
               hintText: widget.hint,
               suffixIcon: _ok == null

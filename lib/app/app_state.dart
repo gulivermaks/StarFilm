@@ -43,8 +43,9 @@ class AppControllerState {
     this.collections = const [],
     this.tmdbKey = '',
     this.geminiKey = '',
+    this.backupAiKey = '',
     this.kinopoiskKey = '',
-    this.geminiModel = 'gemini-2.5-flash-lite',
+    this.geminiModel = GeminiClient.fallbackModel,
     this.preferredPlayer = MobilePlayerId.stremio,
     this.pairedDevices = const [],
     this.selectedTvId = '',
@@ -57,6 +58,7 @@ class AppControllerState {
     this.recommendations = const [],
     this.isPicking = false,
     this.usedFallback = false,
+    this.lastFallbackReason = '',
     this.lastDiscoveryError = '',
     this.recentShownIds = const {},
     this.recentShownLabels = const [],
@@ -74,6 +76,7 @@ class AppControllerState {
   final List<UserCollection> collections;
   final String tmdbKey;
   final String geminiKey;
+  final String backupAiKey;
   final String kinopoiskKey;
   final String geminiModel;
   final MobilePlayerId preferredPlayer;
@@ -88,6 +91,7 @@ class AppControllerState {
   final List<RecommendationCard> recommendations;
   final bool isPicking;
   final bool usedFallback;
+  final String lastFallbackReason;
   final String lastDiscoveryError;
   final Set<String> recentShownIds;
   final List<String> recentShownLabels;
@@ -134,6 +138,7 @@ class AppControllerState {
     List<UserCollection>? collections,
     String? tmdbKey,
     String? geminiKey,
+    String? backupAiKey,
     String? kinopoiskKey,
     String? geminiModel,
     MobilePlayerId? preferredPlayer,
@@ -148,6 +153,7 @@ class AppControllerState {
     List<RecommendationCard>? recommendations,
     bool? isPicking,
     bool? usedFallback,
+    String? lastFallbackReason,
     String? lastDiscoveryError,
     Set<String>? recentShownIds,
     List<String>? recentShownLabels,
@@ -165,6 +171,7 @@ class AppControllerState {
       collections: collections ?? this.collections,
       tmdbKey: tmdbKey ?? this.tmdbKey,
       geminiKey: geminiKey ?? this.geminiKey,
+      backupAiKey: backupAiKey ?? this.backupAiKey,
       kinopoiskKey: kinopoiskKey ?? this.kinopoiskKey,
       geminiModel: geminiModel ?? this.geminiModel,
       preferredPlayer: preferredPlayer ?? this.preferredPlayer,
@@ -179,6 +186,7 @@ class AppControllerState {
       recommendations: recommendations ?? this.recommendations,
       isPicking: isPicking ?? this.isPicking,
       usedFallback: usedFallback ?? this.usedFallback,
+      lastFallbackReason: lastFallbackReason ?? this.lastFallbackReason,
       lastDiscoveryError: lastDiscoveryError ?? this.lastDiscoveryError,
       recentShownIds: recentShownIds ?? this.recentShownIds,
       recentShownLabels: recentShownLabels ?? this.recentShownLabels,
@@ -197,7 +205,7 @@ final appServicesProvider = Provider<AppServices>((ref) {
   final repo = LibraryRepository(db);
   final secrets = SecretStore();
   final tmdb = TmdbClient(http, log: log);
-  final gemini = GeminiClient(http);
+  final gemini = GeminiClient(http, log: log);
   final kinopoisk = KinopoiskClient(http, log: log);
   final digitalReleases = DigitalReleaseService(tmdb);
   final discovery = DiscoveryService(gemini: gemini, tmdb: tmdb, log: log);
@@ -277,6 +285,7 @@ class AppController extends Notifier<AppControllerState> {
 
   final Map<String, List<RecommendationCard>> _recsByProfile = {};
   final Map<String, bool> _fallbackByProfile = {};
+  final Map<String, String> _fallbackReasonByProfile = {};
   final Map<String, String> _recErrorByProfile = {};
   final Map<String, Set<String>> _recentIdsByProfile = {};
   final Map<String, List<String>> _recentLabelsByProfile = {};
@@ -313,6 +322,7 @@ class AppController extends Notifier<AppControllerState> {
       final collections = await _s.repo.listCollections(activeId);
       final tmdbKey = await _s.secrets.getTmdbKey();
       final geminiKey = await _s.secrets.getGeminiKey();
+      final backupAiKey = await _s.secrets.getBackupAiKey();
       final kinopoiskKey = await _s.secrets.getKinopoiskKey();
       final deviceId = await _s.secrets.getOrCreateDeviceId();
       final tvs = await _s.secrets.loadStarTvDevices();
@@ -334,6 +344,7 @@ class AppController extends Notifier<AppControllerState> {
         collections: collections,
         tmdbKey: tmdbKey,
         geminiKey: geminiKey,
+        backupAiKey: backupAiKey,
         kinopoiskKey: kinopoiskKey,
         geminiModel: normalizedGeminiModel,
         preferredPlayer: MobilePlayerId.fromId(prefs.getString(_prefPlayer)),
@@ -529,6 +540,7 @@ class AppController extends Notifier<AppControllerState> {
   Future<void> setApiKeys({
     String? tmdbKey,
     String? geminiKey,
+    String? backupAiKey,
     String? kinopoiskKey,
   }) async {
     if (tmdbKey != null) {
@@ -537,12 +549,16 @@ class AppController extends Notifier<AppControllerState> {
     if (geminiKey != null) {
       await _s.secrets.setGeminiKey(geminiKey);
     }
+    if (backupAiKey != null) {
+      await _s.secrets.setBackupAiKey(backupAiKey);
+    }
     if (kinopoiskKey != null) {
       await _s.secrets.setKinopoiskKey(kinopoiskKey);
     }
     state = state.copyWith(
       tmdbKey: tmdbKey?.trim() ?? state.tmdbKey,
       geminiKey: geminiKey?.trim() ?? state.geminiKey,
+      backupAiKey: backupAiKey?.trim() ?? state.backupAiKey,
       kinopoiskKey: kinopoiskKey?.trim() ?? state.kinopoiskKey,
     );
   }
@@ -647,6 +663,7 @@ class AppController extends Notifier<AppControllerState> {
       collections: collections,
       recommendations: _recsByProfile[profileId] ?? const [],
       usedFallback: _fallbackByProfile[profileId] ?? false,
+      lastFallbackReason: _fallbackReasonByProfile[profileId] ?? '',
       lastDiscoveryError: _recErrorByProfile[profileId] ?? '',
       recentShownIds: _recentIdsByProfile[profileId] ?? const {},
       recentShownLabels: _recentLabelsByProfile[profileId] ?? const [],
@@ -682,6 +699,7 @@ class AppController extends Notifier<AppControllerState> {
     await _s.repo.deleteProfile(profileId, accountUid: state.cloudUid);
     _recsByProfile.remove(profileId);
     _fallbackByProfile.remove(profileId);
+    _fallbackReasonByProfile.remove(profileId);
     _recErrorByProfile.remove(profileId);
     _recentIdsByProfile.remove(profileId);
     _recentLabelsByProfile.remove(profileId);
@@ -921,6 +939,7 @@ class AppController extends Notifier<AppControllerState> {
   void _clearRecommendationCaches() {
     _recsByProfile.clear();
     _fallbackByProfile.clear();
+    _fallbackReasonByProfile.clear();
     _recErrorByProfile.clear();
     _recentIdsByProfile.clear();
     _recentLabelsByProfile.clear();
@@ -935,16 +954,24 @@ class AppController extends Notifier<AppControllerState> {
     final prevIds = _recentIdsByProfile[targetPid] ?? state.recentShownIds;
     final prevLabels =
         _recentLabelsByProfile[targetPid] ?? state.recentShownLabels;
+    final isFreshPrompt =
+        !request.different && request.prompt.trim().isNotEmpty;
+    final recentIdsForCall = isFreshPrompt ? const <String>{} : prevIds;
     final page = request.different
         ? ((_discoverPageByProfile[targetPid] ?? 1) + 1)
         : 1;
     _discoverPageByProfile[targetPid] = page;
 
-    state = state.copyWith(isPicking: true, lastDiscoveryError: '');
+    state = state.copyWith(
+      isPicking: true,
+      lastDiscoveryError: '',
+      lastFallbackReason: '',
+    );
     try {
       final result = await _s.discovery.recommend(
         tmdbApiKey: state.tmdbKey,
         geminiApiKey: state.geminiKey,
+        backupAiKey: state.backupAiKey,
         geminiModel: state.geminiModel,
         request: DiscoveryRequest(
           prompt: request.prompt,
@@ -956,8 +983,10 @@ class AppController extends Notifier<AppControllerState> {
         ),
         profile: targetProfile,
         library: targetLibrary,
-        recentShownIds: prevIds,
+        recentShownIds: recentIdsForCall,
         recentShownLabels: prevLabels,
+        kinopoisk: _s.kinopoisk,
+        kinopoiskApiKey: state.kinopoiskKey,
         discoverPage: page,
       );
 
@@ -974,6 +1003,7 @@ class AppController extends Notifier<AppControllerState> {
 
       _recsByProfile[targetPid] = result.cards;
       _fallbackByProfile[targetPid] = result.usedFallback;
+      _fallbackReasonByProfile[targetPid] = result.fallbackReason ?? '';
       _recErrorByProfile[targetPid] = '';
       _recentIdsByProfile[targetPid] = nextShownIds;
       _recentLabelsByProfile[targetPid] = trimmedLabels;
@@ -983,6 +1013,7 @@ class AppController extends Notifier<AppControllerState> {
           isPicking: false,
           recommendations: result.cards,
           usedFallback: result.usedFallback,
+          lastFallbackReason: result.fallbackReason ?? '',
           recentShownIds: nextShownIds,
           recentShownLabels: trimmedLabels,
         );

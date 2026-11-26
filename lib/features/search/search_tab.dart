@@ -24,6 +24,8 @@ class SearchTab extends ConsumerStatefulWidget {
 class _SearchTabState extends ConsumerState<SearchTab> {
   final _queryController = TextEditingController();
   List<TmdbSearchCandidate> _results = const [];
+  String _lastQuery = '';
+  String _lastPhonetic = '';
   bool _searching = false;
   bool _searched = false;
   String? _errorMessage;
@@ -62,7 +64,7 @@ class _SearchTabState extends ConsumerState<SearchTab> {
 
   Future<void> _search() async {
     final state = ref.read(appControllerProvider);
-    final raw = _queryController.text.trim();
+    final raw = TmdbMatcher.cleanSearchQuery(_queryController.text);
     if (raw.isEmpty || state.tmdbKey.isEmpty) return;
 
     // Parse optional trailing year e.g. "Matrix 1999"
@@ -70,7 +72,8 @@ class _SearchTabState extends ConsumerState<SearchTab> {
     var query = raw;
     final match = RegExp(r'^(.*?)(?:\s+|\()((?:19|20)\d{2})\)?$').firstMatch(raw);
     if (match != null) {
-      final candidateQuery = match.group(1)?.trim() ?? '';
+      final candidateQuery =
+          TmdbMatcher.cleanSearchQuery(match.group(1) ?? '');
       final parsedYear = int.tryParse(match.group(2) ?? '');
       if (candidateQuery.isNotEmpty && parsedYear != null) {
         query = candidateQuery;
@@ -81,18 +84,24 @@ class _SearchTabState extends ConsumerState<SearchTab> {
     // Always request titles/posters in the active profile's contentLanguage
     // (TMDB indexes both localized titles and original Latin titles).
     final lang = state.activeProfile.preferences.contentLanguage;
+    final phonetic = TmdbMatcher.phoneticLatinQuery(query);
 
     setState(() {
       _searching = true;
       _searched = true;
       _errorMessage = null;
+      _lastQuery = query;
+      _lastPhonetic = phonetic;
     });
     try {
-      final items = await ref.read(appServicesProvider).tmdb.searchMulti(
+      final services = ref.read(appServicesProvider);
+      final items = await services.tmdb.searchCatalog(
             apiKey: state.tmdbKey,
             query: query,
             contentLanguage: lang,
             yearHint: yearHint,
+            kinopoisk: services.kinopoisk,
+            kinopoiskApiKey: state.kinopoiskKey,
           );
       if (mounted) {
         setState(() {
@@ -121,6 +130,26 @@ class _SearchTabState extends ConsumerState<SearchTab> {
         });
       }
     }
+  }
+
+  void _clearSearch() {
+    _queryController.clear();
+    setState(() {
+      _results = const [];
+      _lastQuery = '';
+      _lastPhonetic = '';
+      _searched = false;
+      _errorMessage = null;
+    });
+  }
+
+  void _resetFilters() {
+    setState(() {
+      _typeFilter = null;
+      _selectedGenre = null;
+      _minRating = 0;
+      _yearFilter = _YearRangeFilter.all;
+    });
   }
 
   bool _matchesYear(int? year) {
@@ -182,6 +211,9 @@ class _SearchTabState extends ConsumerState<SearchTab> {
       return true;
     }).toList();
 
+    final hasPhonetic = _lastPhonetic.isNotEmpty &&
+        _lastPhonetic.toLowerCase() != _lastQuery.toLowerCase();
+
     return Column(
       children: [
         Padding(
@@ -192,6 +224,7 @@ class _SearchTabState extends ConsumerState<SearchTab> {
               TextField(
                 controller: _queryController,
                 textInputAction: TextInputAction.search,
+                onChanged: (_) => setState(() {}),
                 onSubmitted: (_) => _search(),
                 decoration: InputDecoration(
                   hintText: s.t('search_hint'),
@@ -199,6 +232,11 @@ class _SearchTabState extends ConsumerState<SearchTab> {
                   suffixIcon: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
+                      if (_queryController.text.isNotEmpty)
+                        IconButton(
+                          icon: const Icon(Icons.close, size: 18),
+                          onPressed: _clearSearch,
+                        ),
                       IconButton(
                         tooltip: s.t('voice_input_tooltip'),
                         icon: const Icon(Icons.mic_none),
@@ -302,18 +340,37 @@ class _SearchTabState extends ConsumerState<SearchTab> {
               ? Center(
                   child: Padding(
                     padding: const EdgeInsets.all(24),
-                    child: Text(
-                      _errorMessage ??
-                          (state.tmdbKey.isEmpty
-                              ? s.t('pick_need_tmdb')
-                              : (_searched ? s.t('search_no_results') : s.t('search_empty'))),
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        color: _errorMessage != null
-                            ? StarFilmColors.error
-                            : StarFilmColors.textSecondary,
-                      ),
-                    ),
+                    child: _results.isNotEmpty && _errorMessage == null
+                        ? Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                s.t('search_hidden_by_filters', {'n': _results.length}),
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(color: StarFilmColors.textSecondary),
+                              ),
+                              const SizedBox(height: 12),
+                              OutlinedButton.icon(
+                                onPressed: _resetFilters,
+                                icon: const Icon(Icons.filter_alt_off),
+                                label: Text(s.t('reset_filters')),
+                              ),
+                            ],
+                          )
+                        : Text(
+                            _errorMessage ??
+                                (state.tmdbKey.isEmpty
+                                    ? s.t('pick_need_tmdb')
+                                    : (_searched
+                                        ? s.t('search_no_results')
+                                        : s.t('search_empty'))),
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: _errorMessage != null
+                                  ? StarFilmColors.error
+                                  : StarFilmColors.textSecondary,
+                            ),
+                          ),
                   ),
                 )
               : ListView.builder(
@@ -325,6 +382,15 @@ class _SearchTabState extends ConsumerState<SearchTab> {
                     final existing = libraryByKey[keyStr];
                     final isWant = existing?.status == WatchStatus.watchlist;
                     final isSeen = existing?.status == WatchStatus.watched;
+                    final isExact = _lastQuery.isNotEmpty &&
+                        TmdbMatcher.isExactTitleMatch(
+                          query: _lastQuery,
+                          item: item,
+                          phoneticQuery: hasPhonetic ? _lastPhonetic : null,
+                        );
+                    final showOriginal = item.originalTitle.isNotEmpty &&
+                        TmdbMatcher.normalizeTitle(item.originalTitle) !=
+                            TmdbMatcher.normalizeTitle(item.title);
 
                     return Card(
                       margin: const EdgeInsets.only(bottom: 10),
@@ -371,17 +437,61 @@ class _SearchTabState extends ConsumerState<SearchTab> {
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    Text(
-                                      item.title,
-                                      style: const TextStyle(
-                                        fontWeight: FontWeight.w600,
-                                        fontSize: 15,
-                                      ),
+                                    Wrap(
+                                      spacing: 6,
+                                      runSpacing: 4,
+                                      crossAxisAlignment: WrapCrossAlignment.center,
+                                      children: [
+                                        Text(
+                                          item.title,
+                                          style: const TextStyle(
+                                            fontWeight: FontWeight.w600,
+                                            fontSize: 15,
+                                          ),
+                                        ),
+                                        if (isExact)
+                                          Container(
+                                            padding: const EdgeInsets.symmetric(
+                                              horizontal: 6,
+                                              vertical: 2,
+                                            ),
+                                            decoration: BoxDecoration(
+                                              color: StarFilmColors.lime.withValues(alpha: 0.16),
+                                              borderRadius: BorderRadius.circular(6),
+                                              border: Border.all(
+                                                color: StarFilmColors.lime.withValues(alpha: 0.5),
+                                              ),
+                                            ),
+                                            child: Text(
+                                              s.t('exact_match_badge'),
+                                              style: const TextStyle(
+                                                color: StarFilmColors.lime,
+                                                fontSize: 10,
+                                                fontWeight: FontWeight.w700,
+                                              ),
+                                            ),
+                                          ),
+                                      ],
                                     ),
+                                    if (showOriginal) ...[
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        item.originalTitle,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                          color: StarFilmColors.textSecondary,
+                                          fontSize: 12,
+                                        ),
+                                      ),
+                                    ],
                                     const SizedBox(height: 4),
                                     Text(
                                       [
                                         if (item.year != null) '${item.year}',
+                                        item.mediaType == MediaType.tv
+                                            ? s.t('type_tv')
+                                            : s.t('type_movie'),
                                         if (item.voteAverage > 0)
                                           'TMDB ${item.voteAverage.toStringAsFixed(1)}',
                                         if (existing?.userRating != null)

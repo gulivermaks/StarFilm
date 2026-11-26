@@ -3,6 +3,7 @@ import 'dart:convert';
 import '../../core/models/media_key.dart';
 import '../../core/network/starfilm_http_client.dart';
 import '../../core/security/log_sanitizer.dart';
+import '../ratings/kinopoisk_client.dart';
 import 'tmdb_matcher.dart';
 
 class TmdbHttpException implements Exception {
@@ -132,27 +133,353 @@ class TmdbClient {
     String contentLanguage = 'uk',
     int? yearHint,
   }) async {
-    final q = query.trim();
+    final q = TmdbMatcher.cleanSearchQuery(query);
     if (q.isEmpty || _normalizeToken(apiKey).isEmpty) return const [];
     final locale = toTmdbLocale(contentLanguage);
-    var out = await _runSearchMulti(
+    final merged = <String, TmdbSearchCandidate>{};
+
+    final primary = await _runSearchMulti(
       apiKey: apiKey,
       query: q,
       locale: locale,
       yearHint: yearHint,
     );
-    if (out.isEmpty) {
-      final phonetic = TmdbMatcher.phoneticLatinQuery(q);
-      if (phonetic.isNotEmpty && phonetic.toLowerCase() != q.toLowerCase()) {
-        out = await _runSearchMulti(
+    _mergeCandidates(merged, primary, preservePrimaryTitle: true);
+
+    final phonetic = TmdbMatcher.phoneticLatinQuery(q);
+    final hasPhonetic =
+        phonetic.isNotEmpty && phonetic.toLowerCase() != q.toLowerCase();
+    final hasExact = merged.values.any(
+      (c) => TmdbMatcher.isExactTitleMatch(
+        query: q,
+        item: c,
+        phoneticQuery: hasPhonetic ? phonetic : null,
+      ),
+    );
+    if (!hasExact && hasPhonetic) {
+      final phoneticHits = await _runSearchMulti(
+        apiKey: apiKey,
+        query: phonetic,
+        locale: locale,
+        yearHint: yearHint,
+      );
+      _mergeCandidates(merged, phoneticHits, preservePrimaryTitle: false);
+    }
+
+    return TmdbMatcher.rankSearchResults(
+      query: q,
+      phoneticQuery: hasPhonetic ? phonetic : null,
+      yearHint: yearHint,
+      results: merged.values.toList(),
+    );
+  }
+
+  /// Thorough catalog search combining `/search/movie`, `/search/tv`, cross-locale,
+  /// phonetic transliteration, page 2 fallback, optional Kinopoisk title hints,
+  /// and exact-first local ranking.
+  Future<List<TmdbSearchCandidate>> searchCatalog({
+    required String apiKey,
+    required String query,
+    String contentLanguage = 'uk',
+    MediaType? mediaTypeFilter,
+    int? yearHint,
+    KinopoiskClient? kinopoisk,
+    String kinopoiskApiKey = '',
+  }) async {
+    final q = TmdbMatcher.cleanSearchQuery(query);
+    if (q.isEmpty || _normalizeToken(apiKey).isEmpty) return const [];
+
+    final primaryLocale = toTmdbLocale(contentLanguage);
+    final phonetic = TmdbMatcher.phoneticLatinQuery(q);
+    final hasPhonetic =
+        phonetic.isNotEmpty && phonetic.toLowerCase() != q.toLowerCase();
+    final types = mediaTypeFilter != null
+        ? [mediaTypeFilter]
+        : const [MediaType.movie, MediaType.tv];
+
+    final merged = <String, TmdbSearchCandidate>{};
+    var maxTotalPages = 1;
+    Object? firstError;
+    var anySuccess = false;
+
+    final primaryPages = await Future.wait(
+      types.map((type) async {
+        try {
+          final page = await _runSearchTypedPage(
+            apiKey: apiKey,
+            mediaType: type,
+            query: q,
+            locale: primaryLocale,
+            throwOnError: true,
+          );
+          anySuccess = true;
+          return page;
+        } catch (e) {
+          firstError ??= e;
+          return const _SearchPageResult(items: [], totalPages: 1);
+        }
+      }),
+    );
+
+    final isOnly404 =
+        firstError is TmdbHttpException && (firstError as TmdbHttpException).statusCode == 404;
+    if (!anySuccess && firstError != null && !isOnly404) {
+      throw firstError!;
+    }
+
+    for (final page in primaryPages) {
+      if (page.totalPages > maxTotalPages) maxTotalPages = page.totalPages;
+      _mergeCandidates(merged, page.items, preservePrimaryTitle: true);
+    }
+
+    // Compatibility fallback if only /3/search/multi responded (e.g. mocks).
+    if (merged.isEmpty) {
+      try {
+        final multiHits = await _runSearchMulti(
           apiKey: apiKey,
-          query: phonetic,
-          locale: locale,
-          yearHint: yearHint,
+          query: q,
+          locale: primaryLocale,
+        );
+        final filteredMulti = mediaTypeFilter != null
+            ? multiHits.where((e) => e.mediaType == mediaTypeFilter).toList()
+            : multiHits;
+        _mergeCandidates(merged, filteredMulti, preservePrimaryTitle: true);
+      } catch (e) {
+        if (!anySuccess && firstError != null) {
+          throw firstError!;
+        }
+        if (!anySuccess) rethrow;
+      }
+    }
+
+    bool hasExactMatch() => merged.values.any(
+          (c) => TmdbMatcher.isExactTitleMatch(
+            query: q,
+            item: c,
+            phoneticQuery: hasPhonetic ? phonetic : null,
+          ),
+        );
+
+    Future<void> searchAndMerge({
+      required String qText,
+      required String locale,
+      int page = 1,
+      String? extraAlias,
+    }) async {
+      final hits = await Future.wait(
+        types.map(
+          (t) => _runSearchTypedPage(
+            apiKey: apiKey,
+            mediaType: t,
+            query: qText,
+            locale: locale,
+            page: page,
+          ),
+        ),
+      );
+      var addedAny = false;
+      for (final h in hits) {
+        if (h.items.isNotEmpty) {
+          addedAny = true;
+          final prepared = extraAlias != null && extraAlias.isNotEmpty
+              ? h.items
+                  .map(
+                    (c) => c.copyWith(
+                      matchedAliases: [...c.matchedAliases, extraAlias],
+                    ),
+                  )
+                  .toList()
+              : h.items;
+          _mergeCandidates(
+            merged,
+            prepared,
+            preservePrimaryTitle: true,
+          );
+        }
+      }
+      if (!addedAny && page == 1) {
+        try {
+          final multi = await _runSearchMulti(
+            apiKey: apiKey,
+            query: qText,
+            locale: locale,
+          );
+          final filtered = mediaTypeFilter != null
+              ? multi.where((e) => e.mediaType == mediaTypeFilter).toList()
+              : multi;
+          final prepared = extraAlias != null && extraAlias.isNotEmpty
+              ? filtered
+                  .map(
+                    (c) => c.copyWith(
+                      matchedAliases: [...c.matchedAliases, extraAlias],
+                    ),
+                  )
+                  .toList()
+              : filtered;
+          _mergeCandidates(
+            merged,
+            prepared,
+            preservePrimaryTitle: true,
+          );
+        } catch (_) {}
+      }
+    }
+
+    final script = TmdbMatcher.detectQueryScript(q);
+    if (!hasExactMatch()) {
+      final extraLocales = <String>[];
+      if ((script == 'ru' || script == 'cyrillic') && contentLanguage != 'ru') {
+        extraLocales.add('ru-RU');
+      }
+      if (script == 'uk' && contentLanguage != 'uk') {
+        extraLocales.add('uk-UA');
+      }
+      if (script == 'latin' && contentLanguage != 'en') {
+        extraLocales.add('en-US');
+      }
+
+      for (final loc in extraLocales) {
+        if (hasExactMatch()) break;
+        await searchAndMerge(qText: q, locale: loc);
+      }
+    }
+
+    if (!hasExactMatch() && hasPhonetic) {
+      await searchAndMerge(qText: phonetic, locale: primaryLocale);
+      if (!hasExactMatch() && contentLanguage != 'en') {
+        await searchAndMerge(
+          qText: phonetic,
+          locale: 'en-US',
         );
       }
     }
-    return out;
+
+    if (!hasExactMatch() && maxTotalPages > 1) {
+      await searchAndMerge(qText: q, locale: primaryLocale, page: 2);
+    }
+
+    if (!hasExactMatch() &&
+        kinopoisk != null &&
+        kinopoiskApiKey.trim().isNotEmpty &&
+        script != 'latin') {
+      final hints = await kinopoisk.searchTitleHints(
+        apiKey: kinopoiskApiKey,
+        keyword: q,
+      );
+      final normalizedQ = TmdbMatcher.normalizeTitle(q);
+      final exactHint = hints.where((h) {
+        final ruMatch = TmdbMatcher.normalizeTitle(h.nameRu) == normalizedQ;
+        return ruMatch && h.nameEn.isNotEmpty;
+      }).firstOrNull ??
+          hints.where((h) => h.nameEn.isNotEmpty).firstOrNull;
+      if (exactHint != null) {
+        await searchAndMerge(
+          qText: exactHint.nameEn,
+          locale: primaryLocale,
+          extraAlias: exactHint.nameRu,
+        );
+        if (!hasExactMatch() && contentLanguage != 'en') {
+          await searchAndMerge(
+            qText: exactHint.nameEn,
+            locale: 'en-US',
+            extraAlias: exactHint.nameRu,
+          );
+        }
+      }
+    }
+
+    var results = merged.values.toList();
+    if (yearHint != null) {
+      final yearMatched =
+          results.where((c) => TmdbMatcher.yearsCompatible(yearHint, c.year)).toList();
+      if (yearMatched.isNotEmpty) {
+        results = yearMatched;
+      }
+    }
+
+    return TmdbMatcher.rankSearchResults(
+      query: q,
+      phoneticQuery: hasPhonetic ? phonetic : null,
+      yearHint: yearHint,
+      preferredType: mediaTypeFilter,
+      results: results,
+    );
+  }
+
+  /// Fetches similar / recommended TMDB items for a resolved title.
+  Future<List<TmdbSearchCandidate>> fetchRecommendations({
+    required String apiKey,
+    required MediaType mediaType,
+    required int tmdbId,
+    String contentLanguage = 'uk',
+  }) async {
+    final key = _normalizeToken(apiKey);
+    if (key.isEmpty || tmdbId <= 0) return const [];
+    try {
+      final res = await _get(
+        key,
+        '/3/${mediaType.wireValue}/$tmdbId/recommendations',
+        {'language': toTmdbLocale(contentLanguage), 'page': '1'},
+      );
+      if (!res.isOk) return const [];
+      final data = jsonDecode(res.body);
+      if (data is! Map<String, dynamic>) return const [];
+      final list = data['results'] as List<dynamic>? ?? const [];
+      return list
+          .whereType<Map<String, dynamic>>()
+          .map((m) => _parseCandidate(m, mediaType))
+          .whereType<TmdbSearchCandidate>()
+          .toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  void _mergeCandidates(
+    Map<String, TmdbSearchCandidate> target,
+    List<TmdbSearchCandidate> incoming, {
+    required bool preservePrimaryTitle,
+  }) {
+    for (final item in incoming) {
+      final key = '${item.mediaType.wireValue}:${item.tmdbId}';
+      final existing = target[key];
+      if (existing == null) {
+        target[key] = item;
+        continue;
+      }
+      final aliases = <String>{
+        ...existing.matchedAliases,
+        if (existing.title.isNotEmpty) existing.title,
+        if (existing.originalTitle.isNotEmpty) existing.originalTitle,
+        if (item.title.isNotEmpty) item.title,
+        if (item.originalTitle.isNotEmpty) item.originalTitle,
+        ...item.matchedAliases,
+      }.where((s) => s.trim().isNotEmpty).toList();
+
+      target[key] = existing.copyWith(
+        title: preservePrimaryTitle && existing.title.isNotEmpty
+            ? existing.title
+            : (item.title.isNotEmpty ? item.title : existing.title),
+        originalTitle: existing.originalTitle.isNotEmpty
+            ? existing.originalTitle
+            : item.originalTitle,
+        posterPath: existing.posterPath.isNotEmpty
+            ? existing.posterPath
+            : item.posterPath,
+        genreIds:
+            existing.genreIds.isNotEmpty ? existing.genreIds : item.genreIds,
+        voteCount: existing.voteCount >= item.voteCount
+            ? existing.voteCount
+            : item.voteCount,
+        popularity: existing.popularity >= item.popularity
+            ? existing.popularity
+            : item.popularity,
+        voteAverage: existing.voteAverage > 0
+            ? existing.voteAverage
+            : item.voteAverage,
+        matchedAliases: aliases,
+      );
+    }
   }
 
   Future<List<TmdbSearchCandidate>> _runSearchMulti({
@@ -224,24 +551,55 @@ class TmdbClient {
     required String locale,
     int? year,
   }) async {
+    final page = await _runSearchTypedPage(
+      apiKey: apiKey,
+      mediaType: mediaType,
+      query: query,
+      locale: locale,
+      year: year,
+    );
+    return page.items;
+  }
+
+  Future<_SearchPageResult> _runSearchTypedPage({
+    required String apiKey,
+    required MediaType mediaType,
+    required String query,
+    required String locale,
+    int? year,
+    int page = 1,
+    bool throwOnError = false,
+  }) async {
     final params = <String, String>{
       'query': query,
       'language': locale,
       'include_adult': 'false',
+      if (page > 1) 'page': '$page',
     };
     if (year != null && year > 1880) {
       params[mediaType == MediaType.movie ? 'year' : 'first_air_date_year'] = '$year';
     }
     final res = await _get(apiKey, '/3/search/${mediaType.wireValue}', params);
-    if (!res.isOk) return const [];
+    if (!res.isOk) {
+      if (throwOnError) {
+        throw TmdbHttpException(res.statusCode, 'HTTP ${res.statusCode}');
+      }
+      return const _SearchPageResult(items: [], totalPages: 1);
+    }
     final data = jsonDecode(res.body);
-    if (data is! Map<String, dynamic>) return const [];
+    if (data is! Map<String, dynamic>) {
+      return const _SearchPageResult(items: [], totalPages: 1);
+    }
     final list = data['results'] as List<dynamic>? ?? const [];
-    return list
+    final totalPages = (data['total_pages'] is num)
+        ? (data['total_pages'] as num).toInt()
+        : 1;
+    final items = list
         .whereType<Map<String, dynamic>>()
         .map((m) => _parseCandidate(m, mediaType))
         .whereType<TmdbSearchCandidate>()
         .toList();
+    return _SearchPageResult(items: items, totalPages: totalPages);
   }
 
   Future<MediaDetails?> fetchDetails({
@@ -646,6 +1004,17 @@ class TmdbClient {
       genreIds: genres,
       voteAverage: (m['vote_average'] is num) ? (m['vote_average'] as num).toDouble() : 0.0,
       popularity: (m['popularity'] is num) ? (m['popularity'] as num).toDouble() : 0.0,
+      voteCount: (m['vote_count'] is num) ? (m['vote_count'] as num).toInt() : 0,
     );
   }
+}
+
+class _SearchPageResult {
+  const _SearchPageResult({
+    required this.items,
+    required this.totalPages,
+  });
+
+  final List<TmdbSearchCandidate> items;
+  final int totalPages;
 }

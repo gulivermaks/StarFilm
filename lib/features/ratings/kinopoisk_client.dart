@@ -18,6 +18,20 @@ class ExternalRatings {
       (imdbRating != null && imdbRating! > 0);
 }
 
+class KinopoiskTitleHint {
+  const KinopoiskTitleHint({
+    required this.nameRu,
+    required this.nameEn,
+    this.year,
+    this.isSeries = false,
+  });
+
+  final String nameRu;
+  final String nameEn;
+  final int? year;
+  final bool isSeries;
+}
+
 /// Fetches Kinopoisk and IMDb ratings via kinopoiskapiunofficial.tech using the
 /// user's personal Kinopoisk API key, matching StarTV's AiRecommender behavior.
 class KinopoiskClient {
@@ -101,6 +115,58 @@ class KinopoiskClient {
       _log?.warn('Kinopoisk lookup failed: $e');
     }
     return null;
+  }
+
+  /// Resolves Russian/Cyrillic title hints (including original English name) for exact TMDB lookup.
+  Future<List<KinopoiskTitleHint>> searchTitleHints({
+    required String apiKey,
+    required String keyword,
+  }) async {
+    final cleanKey = apiKey.trim();
+    final cleanKeyword = keyword.trim();
+    if (!isValidKeyFormat(cleanKey) || cleanKeyword.isEmpty) return const [];
+
+    try {
+      final uri = Uri.https(
+        'kinopoiskapiunofficial.tech',
+        '/api/v2.1/films/search-by-keyword',
+        {'keyword': cleanKeyword},
+      );
+      final res = await _http.get(
+        uri,
+        headers: {'X-API-KEY': cleanKey},
+        timeout: const Duration(seconds: 4),
+      );
+      if (!res.isOk) return const [];
+      final decoded = jsonDecode(res.body);
+      if (decoded is! Map<String, dynamic>) return const [];
+      final films = decoded['films'];
+      if (films is! List || films.isEmpty) return const [];
+
+      final out = <KinopoiskTitleHint>[];
+      for (final raw in films.take(6)) {
+        if (raw is! Map<String, dynamic>) continue;
+        final nameRu = (raw['nameRu'] ?? '').toString().trim();
+        final nameEn = (raw['nameEn'] ?? '').toString().trim();
+        if (nameRu.isEmpty && nameEn.isEmpty) continue;
+        final year = int.tryParse((raw['year'] ?? '').toString().trim());
+        final typeStr = (raw['type'] ?? '').toString().toUpperCase();
+        final isSeries = typeStr == 'TV_SERIES' ||
+            typeStr == 'MINI_SERIES' ||
+            typeStr == 'TV_SHOW';
+        out.add(
+          KinopoiskTitleHint(
+            nameRu: nameRu,
+            nameEn: nameEn,
+            year: year,
+            isSeries: isSeries,
+          ),
+        );
+      }
+      return out;
+    } catch (_) {
+      return const [];
+    }
   }
 
   ExternalRatings? _parseImdbLookup(String body) {
