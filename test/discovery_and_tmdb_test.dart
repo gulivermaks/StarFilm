@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -846,5 +847,162 @@ void main() {
       recentShownLabels: const [],
     );
     expect(recResSimilar.cards.map((c) => c.tmdbId), [438631, 693134, 335984]);
+  });
+
+  test('GeminiClient future-proof ranking, 404/5xx health, stall cap, and SHA-256 cache round-trip',
+      () async {
+    final ranked = GeminiClient.rankDiscoveredModels([
+      'models/gemini-3.8-flash-tts',
+      'models/gemini-3.1-flash-image',
+      'models/gemini-3.8-live',
+      'models/gemini-omni-1.2-flash',
+      'models/genie-4',
+      'models/gemini-computer-use-preview',
+      'models/gemini-deep-research-pro',
+      'models/gemini-audio-preview',
+      'models/gemma-3-4b-it',
+      'models/gemma-3-27b-it',
+      'models/gemma-3-12b-it',
+      'models/gemini-flash-latest',
+      'models/gemini-flash-lite-latest',
+      'models/gemini-4-hydrogen',
+      'models/gemini-3.5-flash-lite-preview',
+      'models/gemini-3.5-flash-lite-001',
+      'models/gemini-3.5-flash-lite',
+      'models/gemini-4.5-flash-lite',
+      'models/gemini-5.2-flash-lite',
+      'models/gemini-4.0-flash',
+    ]);
+    expect(ranked, [
+      'gemini-5.2-flash-lite',
+      'gemini-4.5-flash-lite',
+      'gemini-3.5-flash-lite',
+      'gemini-3.5-flash-lite-001',
+      'gemini-3.5-flash-lite-preview',
+      'gemini-4.0-flash',
+      'gemini-flash-lite-latest',
+      'gemini-flash-latest',
+      'gemini-4-hydrogen',
+      'gemma-3-27b-it',
+      'gemma-3-12b-it',
+      'gemma-3-4b-it',
+    ]);
+
+    // 404 + 503 health tracking & lastWorking priority on subsequent call
+    final callLog = <String>[];
+    final mockHealthHttp = MockClient((req) async {
+      callLog.add(req.url.path);
+      if (req.url.path == '/v1beta/models') {
+        return http.Response.bytes(
+          utf8.encode(jsonEncode({
+            'models': [
+              {
+                'name': 'models/gemini-3.6-flash',
+                'supportedGenerationMethods': ['generateContent'],
+              }
+            ],
+          })),
+          200,
+        );
+      }
+      if (req.url.path.contains('gemini-3.5-flash-lite')) {
+        return http.Response('{"error":{"code":404}}', 404);
+      }
+      if (req.url.path.contains('gemini-3.1-flash-lite')) {
+        return http.Response('{"error":{"code":503}}', 503);
+      }
+      if (req.url.path.contains('gemini-3.6-flash')) {
+        return http.Response.bytes(
+          utf8.encode(jsonEncode({
+            'candidates': [
+              {
+                'content': {
+                  'parts': [
+                    {
+                      'text': jsonEncode({
+                        'recommendations': [
+                          {
+                            'title': 'Прибытие',
+                            'original_title': 'Arrival',
+                            'year': 2016,
+                            'media_type': 'movie',
+                            'genre': 'Sci-Fi',
+                            'reason': 'Лингвистика и космос',
+                          }
+                        ],
+                      }),
+                    }
+                  ],
+                },
+              }
+            ],
+          })),
+          200,
+        );
+      }
+      return http.Response('{"error":{"code":429}}', 429);
+    });
+
+    String? savedCache;
+    final rawKey1 = 'synthetic-starfilm-key-alpha-123456';
+    final healthClient = GeminiClient(
+      StarFilmHttpClient(client: mockHealthHttp),
+      onCacheUpdated: (json) => savedCache = json,
+    );
+    final res1 = await healthClient.generateCandidates(
+      apiKey: rawKey1,
+      model: 'gemini-3.5-flash-lite',
+      request: const DiscoveryRequest(prompt: 'Sci-fi'),
+      profile: UserProfile(id: 'main', name: 'Main'),
+      library: const [],
+      recentShownLabels: const [],
+    );
+    await Future<void>.delayed(Duration.zero);
+    expect(res1.single.originalTitle, 'Arrival');
+    expect(healthClient.lastWorkingModel, 'gemini-3.6-flash');
+    expect(healthClient.lastWorkingProvider, 'gemini');
+    expect(healthClient.discoveredModels, ['gemini-3.6-flash']);
+    expect(savedCache, isNotNull);
+    expect(savedCache!, isNot(contains(rawKey1)));
+    expect(savedCache!, contains(GeminiClient.keyFingerprint(rawKey1)));
+
+    // Second call uses lastWorking first in a single request (no 404/503 retries)
+    callLog.clear();
+    final res2 = await healthClient.generateCandidates(
+      apiKey: rawKey1,
+      model: 'gemini-3.5-flash-lite',
+      request: const DiscoveryRequest(prompt: 'Space'),
+      profile: UserProfile(id: 'main', name: 'Main'),
+      library: const [],
+      recentShownLabels: const [],
+    );
+    expect(res2.single.originalTitle, 'Arrival');
+    expect(callLog, ['/v1beta/models/gemini-3.6-flash:generateContent']);
+
+    // Cache restore into fresh client preserves lastWorkingModel & discoveredModels
+    final restored = GeminiClient(StarFilmHttpClient(client: mockHealthHttp));
+    restored.importCacheJson(savedCache!);
+    expect(restored.lastWorkingModel, 'gemini-3.6-flash');
+    expect(restored.discoveredModels, ['gemini-3.6-flash']);
+
+    // Anti-hang stall cap: 2 TimeoutExceptions abort cascade quickly without trying all 10 models
+    var timeoutCalls = 0;
+    final mockStallHttp = MockClient((req) async {
+      timeoutCalls++;
+      throw TimeoutException('simulated hang');
+    });
+    final stallClient = GeminiClient(StarFilmHttpClient(client: mockStallHttp));
+    await expectLater(
+      () => stallClient.generateCandidates(
+        apiKey: 'synthetic-stall-key-999999',
+        model: 'gemini-3.5-flash-lite',
+        request: const DiscoveryRequest(prompt: 'Thriller'),
+        profile: UserProfile(id: 'main', name: 'Main'),
+        library: const [],
+        recentShownLabels: const [],
+      ),
+      throwsA(isA<GeminiQuotaException>()),
+    );
+    expect(timeoutCalls, 2);
   });
 }

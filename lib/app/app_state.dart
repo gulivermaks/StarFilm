@@ -270,6 +270,7 @@ class AppController extends Notifier<AppControllerState> {
   static const _prefUiLang = 'starfilm.ui_lang';
   static const _prefActiveProfile = 'starfilm.active_profile';
   static const _prefGeminiModel = 'starfilm.gemini_model';
+  static const _prefGeminiModelCache = 'starfilm_gemini_model_cache_v1';
   static const _prefPlayer = 'starfilm.preferred_player';
   static const _prefSelectedTv = 'starfilm.selected_tv';
   static const _prefSyncCursor = 'starfilm.sync_cursor_ms';
@@ -333,6 +334,15 @@ class AppController extends Notifier<AppControllerState> {
       if (savedGeminiModel != normalizedGeminiModel) {
         await prefs.setString(_prefGeminiModel, normalizedGeminiModel);
       }
+      final cachedModelsJson = prefs.getString(_prefGeminiModelCache) ?? '';
+      if (cachedModelsJson.isNotEmpty) {
+        _s.gemini.importCacheJson(cachedModelsJson);
+      }
+      _s.gemini.onCacheUpdated = (json) {
+        if (!_disposed) {
+          unawaited(prefs.setString(_prefGeminiModelCache, json));
+        }
+      };
 
       state = state.copyWith(
         initialized: true,

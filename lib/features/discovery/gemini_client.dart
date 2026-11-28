@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:crypto/crypto.dart';
+
 import '../../core/models/library_entry.dart';
 import '../../core/models/media_key.dart';
 import '../../core/models/profile.dart';
@@ -44,13 +46,16 @@ enum _AttemptOutcome {
   succeeded,
   tryNextModel,
   abortKey,
+  stopCascade,
 }
 
 class GeminiClient {
-  GeminiClient(this._http, {DiagnosticsLog? log}) : _log = log;
+  GeminiClient(this._http, {DiagnosticsLog? log, this.onCacheUpdated})
+      : _log = log;
 
   final StarFilmHttpClient _http;
   final DiagnosticsLog? _log;
+  void Function(String cacheJson)? onCacheUpdated;
 
   static const String host = 'generativelanguage.googleapis.com';
   static const String groqHost = 'api.groq.com';
@@ -66,6 +71,8 @@ class GeminiClient {
     'gemini-2.5-flash-lite',
     'gemini-2.5-flash',
     'gemini-flash-lite-latest',
+    'gemini-flash-latest',
+    'gemma-3-27b-it',
   ];
 
   static const List<String> groqFreeModels = [
@@ -91,13 +98,235 @@ class GeminiClient {
     'gemini-3.5-pro',
   };
 
-  static const Duration _cooldownDuration = Duration(seconds: 90);
-  static const Duration _discoveryCacheTtl = Duration(minutes: 30);
+  static const List<String> _blockedGeminiSubstrings = [
+    'tts',
+    'image',
+    'live',
+    'transcribe',
+    'embedding',
+    'robotics',
+    'nano-banana',
+    'imagen',
+    'veo',
+    'aqa',
+    'vision',
+    'audio',
+    'computer-use',
+    'deep-research',
+    'omni',
+    'genie',
+    'bisheng',
+    'learnlm',
+  ];
 
-  final Map<String, Set<String>> _notFoundModelsByKey = {};
+  static final RegExp _geminiVersionRe = RegExp(r'^gemini-(\d+)(?:\.(\d+))?');
+  static final RegExp _gemmaSizeRe = RegExp(r'(\d+)b\b');
+  static final RegExp _snapshotSuffixRe = RegExp(r'(?:-\d{3}|-\d{2}-\d{4}|-\d{4})$');
+  static final RegExp _validModelIdRe = RegExp(r'^[A-Za-z0-9._-]{3,100}$');
+
+  static const Duration _notFoundTtl = Duration(hours: 6);
+  static const Duration _cooldownDuration = Duration(seconds: 90);
+  static const Duration _discoveryCacheTtl = Duration(hours: 6);
+  static const Duration _attemptTimeout = Duration(seconds: 12);
+  static const Duration _totalRequestBudget = Duration(seconds: 32);
+  static const int _maxStallErrorsPerKey = 2;
+
+  final Map<String, Map<String, DateTime>> _notFoundUntilByKey = {};
   final Map<String, Map<String, DateTime>> _cooldownUntilByKey = {};
+  final Map<String, Map<String, DateTime>> _providerCooldownUntil = {};
   final Map<String, _DiscoveredModelCache> _discoveredModelsByKey = {};
   final Map<String, String> _lastWorkingModelByKey = {};
+  String _lastWorkingModel = '';
+  String _lastWorkingProvider = '';
+  String _activeKeyHash = '';
+
+  String get lastWorkingModel => _lastWorkingModel;
+  String get lastWorkingProvider => _lastWorkingProvider;
+  String get lastWorkingLabel => _lastWorkingModel.isEmpty
+      ? ''
+      : (_lastWorkingProvider.isEmpty
+          ? _lastWorkingModel
+          : '$_lastWorkingProvider/$_lastWorkingModel');
+
+  List<String> get discoveredModels {
+    final cached = _discoveredModelsByKey[_activeKeyHash];
+    if (cached != null) return List.unmodifiable(cached.models);
+    for (final entry in _discoveredModelsByKey.values) {
+      if (entry.models.isNotEmpty) return List.unmodifiable(entry.models);
+    }
+    return const [];
+  }
+
+  /// Returns a non-reversible SHA-256 fingerprint prefix for keying model health state.
+  static String keyFingerprint(String rawKey) {
+    final clean = rawKey.trim();
+    if (clean.isEmpty) return 'empty';
+    final hex = sha256.convert(utf8.encode(clean)).toString();
+    return hex.length > 16 ? hex.substring(0, 16) : hex;
+  }
+
+  static String normalizeDiscoveredId(String raw) {
+    var t = raw.trim();
+    if (t.startsWith('models/')) {
+      t = t.substring(7).trim();
+    }
+    return t;
+  }
+
+  static bool isUsableGeminiTextModelId(String rawName) {
+    final id = normalizeDiscoveredId(rawName);
+    if (!_validModelIdRe.hasMatch(id)) return false;
+    final low = id.toLowerCase();
+    if (!(low.startsWith('gemini-') || low.startsWith('gemma-'))) return false;
+    return !_blockedGeminiSubstrings.any(low.contains);
+  }
+
+  static List<String> rankDiscoveredModels(Iterable<String> rawModels) {
+    final unique = <String>{};
+    for (final raw in rawModels) {
+      final id = normalizeDiscoveredId(raw);
+      if (isUsableGeminiTextModelId(id)) {
+        unique.add(id);
+      }
+    }
+    return unique.toList()..sort(compareGeminiModels);
+  }
+
+  static int _modelTier(String low) {
+    final isLatest = low.endsWith('-latest');
+    if (low.startsWith('gemini-')) {
+      if (isLatest) {
+        if (low == 'gemini-flash-lite-latest' || low == 'gemini-flash-latest') {
+          return 2;
+        }
+        return 4;
+      }
+      if (low.contains('flash-lite')) return 0;
+      if (low.contains('flash')) return 1;
+      return 3;
+    }
+    return 5;
+  }
+
+  static (int, int) _parseGeminiVersion(String low) {
+    final m = _geminiVersionRe.firstMatch(low);
+    if (m == null) return (0, 0);
+    final maj = int.tryParse(m.group(1) ?? '') ?? 0;
+    final min = int.tryParse(m.group(2) ?? '') ?? 0;
+    return (maj, min);
+  }
+
+  static int _parseParamSizeB(String low) {
+    var best = 0;
+    for (final m in _gemmaSizeRe.allMatches(low)) {
+      final v = int.tryParse(m.group(1) ?? '') ?? 0;
+      if (v > best) best = v;
+    }
+    return best;
+  }
+
+  static int compareGeminiModels(String a, String b) {
+    final la = a.toLowerCase();
+    final lb = b.toLowerCase();
+    final ta = _modelTier(la);
+    final tb = _modelTier(lb);
+    if (ta != tb) return ta.compareTo(tb);
+    if (ta == 2) {
+      final sa = la.contains('flash-lite') ? 0 : 1;
+      final sb = lb.contains('flash-lite') ? 0 : 1;
+      if (sa != sb) return sa.compareTo(sb);
+    }
+    if (ta < 5) {
+      final (majA, minA) = _parseGeminiVersion(la);
+      final (majB, minB) = _parseGeminiVersion(lb);
+      if (majA != majB) return majB.compareTo(majA);
+      if (minA != minB) return minB.compareTo(minA);
+    } else {
+      final sa = _parseParamSizeB(la);
+      final sb = _parseParamSizeB(lb);
+      if (sa != sb) return sb.compareTo(sa);
+    }
+    final pa = la.contains('-preview') ||
+        la.contains('-exp') ||
+        la.contains('experimental');
+    final pb = lb.contains('-preview') ||
+        lb.contains('-exp') ||
+        lb.contains('experimental');
+    if (pa != pb) return pa ? 1 : -1;
+    final sna = _snapshotSuffixRe.hasMatch(la);
+    final snb = _snapshotSuffixRe.hasMatch(lb);
+    if (sna != snb) return sna ? 1 : -1;
+    return la.compareTo(lb);
+  }
+
+  String exportCacheJson() {
+    final keysMap = <String, dynamic>{};
+    final hashes = <String>{
+      ..._discoveredModelsByKey.keys,
+      ..._lastWorkingModelByKey.keys,
+    };
+    for (final h in hashes) {
+      if (h.isEmpty || h == 'empty') continue;
+      final disc = _discoveredModelsByKey[h];
+      final last = _lastWorkingModelByKey[h] ?? '';
+      keysMap[h] = {
+        'fetchedAt': disc?.fetchedAt.millisecondsSinceEpoch ?? 0,
+        'lastWorking': last,
+        'discovered': disc?.models ?? const <String>[],
+      };
+    }
+    return jsonEncode({
+      'schema': 1,
+      'keys': keysMap,
+    });
+  }
+
+  void importCacheJson(String raw, {DateTime? now}) {
+    if (raw.trim().isEmpty) return;
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map<String, dynamic>) return;
+      if ((decoded['schema'] as num?)?.toInt() != 1) return;
+      final keysObj = decoded['keys'];
+      if (keysObj is! Map<String, dynamic>) return;
+      final refNow = now ?? DateTime.now();
+      for (final entry in keysObj.entries) {
+        final h = entry.key.trim();
+        if (h.isEmpty ||
+            h == 'empty' ||
+            entry.value is! Map<String, dynamic>) {
+          continue;
+        }
+        final data = entry.value as Map<String, dynamic>;
+        final last = (data['lastWorking'] ?? '').toString().trim();
+        if (last.isNotEmpty) {
+          _lastWorkingModelByKey[h] = last;
+          if (_lastWorkingModel.isEmpty) {
+            _lastWorkingModel = last;
+            _lastWorkingProvider = 'gemini';
+          }
+        }
+        final rawList = data['discovered'];
+        if (rawList is List) {
+          final models = rawList
+              .map((e) => normalizeDiscoveredId(e.toString()))
+              .where((m) => m.isNotEmpty)
+              .toList();
+          final fetchedMs = (data['fetchedAt'] as num?)?.toInt() ?? 0;
+          final fetchedAt = (fetchedMs > 0 &&
+                  fetchedMs <= refNow.millisecondsSinceEpoch + 60000)
+              ? DateTime.fromMillisecondsSinceEpoch(fetchedMs)
+              : DateTime.fromMillisecondsSinceEpoch(0);
+          if (models.isNotEmpty) {
+            _discoveredModelsByKey[h] = _DiscoveredModelCache(
+              models: models,
+              fetchedAt: fetchedAt,
+            );
+          }
+        }
+      }
+    } catch (_) {}
+  }
 
   /// Detects AI provider by API key prefix (`gsk_` -> Groq, `sk-or-` -> OpenRouter, else Gemini).
   static AiKeyProvider detectProvider(String rawKey) {
@@ -271,6 +500,12 @@ class GeminiClient {
     );
   }
 
+  bool _isDiscoveryStale(String keyHash) {
+    final cached = _discoveredModelsByKey[keyHash];
+    if (cached == null || cached.models.isEmpty) return true;
+    return DateTime.now().difference(cached.fetchedAt) >= _discoveryCacheTtl;
+  }
+
   Future<List<GeminiCandidate>?> _tryGeminiKey({
     required String key,
     required String preferredModel,
@@ -280,19 +515,25 @@ class GeminiClient {
     void Function(String provider, String model)? onModelUsed,
   }) async {
     final now = DateTime.now();
-    final notFound = _notFoundModelsByKey[key] ?? <String>{};
-    final cooldowns = _cooldownUntilByKey[key] ?? <String, DateTime>{};
+    final keyHash = keyFingerprint(key);
+    _activeKeyHash = keyHash;
+    final notFound = _notFoundUntilByKey[keyHash] ?? <String, DateTime>{};
+    notFound.removeWhere((_, until) => !until.isAfter(now));
+    final cooldowns = _cooldownUntilByKey[keyHash] ?? <String, DateTime>{};
     cooldowns.removeWhere((_, until) => !until.isAfter(now));
 
     final normalizedPreferred = normalizeModel(preferredModel);
-    final lastWorking = _lastWorkingModelByKey[key];
+    final lastWorking = _lastWorkingModelByKey[keyHash];
+    final cachedDiscovered = _discoveredModelsByKey[keyHash];
 
     final ordered = <String>[];
     final delayedCooldown = <String>[];
     final seenModels = <String>{};
 
     void addCandidate(String m) {
-      if (m.isEmpty || notFound.contains(m) || !seenModels.add(m)) return;
+      if (m.isEmpty || !seenModels.add(m)) return;
+      final nfUntil = notFound[m];
+      if (nfUntil != null && nfUntil.isAfter(now)) return;
       final until = cooldowns[m];
       if (until != null && until.isAfter(now)) {
         delayedCooldown.add(m);
@@ -301,7 +542,7 @@ class GeminiClient {
       }
     }
 
-    final preferredUnavailable = notFound.contains(normalizedPreferred) ||
+    final preferredUnavailable = (notFound[normalizedPreferred]?.isAfter(now) ?? false) ||
         (cooldowns[normalizedPreferred]?.isAfter(now) ?? false);
     if (!preferredUnavailable) {
       addCandidate(normalizedPreferred);
@@ -309,17 +550,30 @@ class GeminiClient {
     if (lastWorking != null && lastWorking.isNotEmpty) {
       addCandidate(lastWorking);
     }
+    if (cachedDiscovered != null) {
+      for (final m in cachedDiscovered.models) {
+        addCandidate(m);
+      }
+    }
     addCandidate(normalizedPreferred);
     for (final m in defaultModels) {
       addCandidate(m);
     }
     ordered.addAll(delayedCooldown);
 
+    final deadline = DateTime.now().add(_totalRequestBudget);
     var abortedKey = false;
+    var stoppedCascade = false;
+    var stallCount = 0;
     final attempted = <String>{};
 
     Future<({List<GeminiCandidate>? candidates, _AttemptOutcome outcome})>
         attemptModel(String candidateModel) async {
+      final remaining = deadline.difference(DateTime.now());
+      if (remaining <= const Duration(seconds: 2)) {
+        return (candidates: null, outcome: _AttemptOutcome.stopCascade);
+      }
+      final reqTimeout = remaining < _attemptTimeout ? remaining : _attemptTimeout;
       attempted.add(candidateModel);
       final isGemma = candidateModel.toLowerCase().startsWith('gemma');
       var res = await _safePostGemini(
@@ -328,10 +582,19 @@ class GeminiClient {
         temperature: temperature,
         systemPrompt: systemPrompt,
         simplified: isGemma,
+        timeout: reqTimeout,
         onTimeoutOrNetwork: (reason) => onStatus(0, reason),
       );
       if (res == null) {
-        return (candidates: null, outcome: _AttemptOutcome.tryNextModel);
+        (_cooldownUntilByKey[keyHash] ??= <String, DateTime>{})[candidateModel] =
+            DateTime.now().add(_cooldownDuration);
+        stallCount++;
+        return (
+          candidates: null,
+          outcome: stallCount >= _maxStallErrorsPerKey
+              ? _AttemptOutcome.stopCascade
+              : _AttemptOutcome.tryNextModel,
+        );
       }
 
       if (!res.isOk) {
@@ -344,17 +607,29 @@ class GeminiClient {
         }
 
         if (res.statusCode == 400 && !isGemma) {
-          _log?.warn('Gemini $candidateModel HTTP 400, retrying simplified config');
-          res = await _safePostGemini(
-            key: key,
-            model: candidateModel,
-            temperature: temperature,
-            systemPrompt: systemPrompt,
-            simplified: true,
-            onTimeoutOrNetwork: (reason) => onStatus(0, reason),
-          );
-          if (res == null) {
-            return (candidates: null, outcome: _AttemptOutcome.tryNextModel);
+          final retryRem = deadline.difference(DateTime.now());
+          if (retryRem > const Duration(seconds: 2)) {
+            _log?.warn('Gemini $candidateModel HTTP 400, retrying simplified config');
+            res = await _safePostGemini(
+              key: key,
+              model: candidateModel,
+              temperature: temperature,
+              systemPrompt: systemPrompt,
+              simplified: true,
+              timeout: retryRem < _attemptTimeout ? retryRem : _attemptTimeout,
+              onTimeoutOrNetwork: (reason) => onStatus(0, reason),
+            );
+            if (res == null) {
+              (_cooldownUntilByKey[keyHash] ??= <String, DateTime>{})[candidateModel] =
+                  DateTime.now().add(_cooldownDuration);
+              stallCount++;
+              return (
+                candidates: null,
+                outcome: stallCount >= _maxStallErrorsPerKey
+                    ? _AttemptOutcome.stopCascade
+                    : _AttemptOutcome.tryNextModel,
+              );
+            }
           }
         }
       }
@@ -368,9 +643,13 @@ class GeminiClient {
           return (candidates: null, outcome: _AttemptOutcome.abortKey);
         }
         if (res.statusCode == 404) {
-          (_notFoundModelsByKey[key] ??= <String>{}).add(candidateModel);
-        } else if (res.statusCode == 429) {
-          (_cooldownUntilByKey[key] ??= <String, DateTime>{})[candidateModel] =
+          (_notFoundUntilByKey[keyHash] ??= <String, DateTime>{})[candidateModel] =
+              DateTime.now().add(_notFoundTtl);
+          if (_lastWorkingModelByKey[keyHash] == candidateModel) {
+            _lastWorkingModelByKey.remove(keyHash);
+          }
+        } else if (res.statusCode == 429 || res.statusCode >= 500) {
+          (_cooldownUntilByKey[keyHash] ??= <String, DateTime>{})[candidateModel] =
               DateTime.now().add(_cooldownDuration);
         }
         return (candidates: null, outcome: _AttemptOutcome.tryNextModel);
@@ -380,11 +659,21 @@ class GeminiClient {
       if (parsed.isEmpty) {
         onStatus(200, 'empty');
         _log?.warn('Gemini $candidateModel returned empty or unparseable JSON');
+        (_cooldownUntilByKey[keyHash] ??= <String, DateTime>{})[candidateModel] =
+            DateTime.now().add(_cooldownDuration);
         return (candidates: null, outcome: _AttemptOutcome.tryNextModel);
       }
 
-      _lastWorkingModelByKey[key] = candidateModel;
+      _lastWorkingModelByKey[keyHash] = candidateModel;
+      _lastWorkingModel = candidateModel;
+      _lastWorkingProvider = 'gemini';
       onModelUsed?.call('gemini', candidateModel);
+      onCacheUpdated?.call(exportCacheJson());
+      if (onCacheUpdated != null && _isDiscoveryStale(keyHash)) {
+        unawaited(_discoverGeminiModels(key, keyHash: keyHash).then((models) {
+          if (models.isNotEmpty) onCacheUpdated?.call(exportCacheJson());
+        }));
+      }
       return (candidates: parsed, outcome: _AttemptOutcome.succeeded);
     }
 
@@ -395,21 +684,29 @@ class GeminiClient {
         abortedKey = true;
         break;
       }
+      if (res.outcome == _AttemptOutcome.stopCascade) {
+        stoppedCascade = true;
+        break;
+      }
     }
 
-    if (!abortedKey) {
-      final discovered = await _discoverGeminiModels(key);
+    if (!abortedKey && !stoppedCascade && DateTime.now().isBefore(deadline)) {
+      final discovered = await _discoverGeminiModels(key, keyHash: keyHash);
       var extraTries = 0;
       for (final candidateModel in discovered) {
-        if (extraTries >= 4) break;
+        if (extraTries >= 4 || !DateTime.now().isBefore(deadline)) break;
+        final nfUntil = notFound[candidateModel];
         if (attempted.contains(candidateModel) ||
-            notFound.contains(candidateModel)) {
+            (nfUntil != null && nfUntil.isAfter(now))) {
           continue;
         }
         extraTries++;
         final res = await attemptModel(candidateModel);
         if (res.outcome == _AttemptOutcome.succeeded) return res.candidates;
-        if (res.outcome == _AttemptOutcome.abortKey) break;
+        if (res.outcome == _AttemptOutcome.abortKey ||
+            res.outcome == _AttemptOutcome.stopCascade) {
+          break;
+        }
       }
     }
 
@@ -422,6 +719,7 @@ class GeminiClient {
     required double temperature,
     required String systemPrompt,
     required bool simplified,
+    required Duration timeout,
     required void Function(String reason) onTimeoutOrNetwork,
   }) async {
     try {
@@ -431,6 +729,7 @@ class GeminiClient {
         temperature: temperature,
         systemPrompt: systemPrompt,
         simplified: simplified,
+        timeout: timeout,
       );
     } on TimeoutException {
       onTimeoutOrNetwork('timeout');
@@ -443,16 +742,17 @@ class GeminiClient {
     }
   }
 
-  Future<List<String>> _discoverGeminiModels(String key) async {
+  Future<List<String>> _discoverGeminiModels(String key, {String? keyHash}) async {
     final now = DateTime.now();
-    final cached = _discoveredModelsByKey[key];
+    final kh = keyHash ?? keyFingerprint(key);
+    final cached = _discoveredModelsByKey[kh];
     if (cached != null && now.difference(cached.fetchedAt) < _discoveryCacheTtl) {
       return cached.models;
     }
 
     try {
       final uri = Uri.https(host, '/v1beta/models', {'pageSize': '100', 'key': key});
-      final res = await _http.get(uri, timeout: const Duration(seconds: 10));
+      final res = await _http.get(uri, timeout: const Duration(seconds: 6));
       if (!res.isOk) {
         _log?.warn('Gemini models.list HTTP ${res.statusCode}');
         return const [];
@@ -460,57 +760,55 @@ class GeminiClient {
       final decoded = jsonDecode(res.body);
       if (decoded is! Map<String, dynamic>) return const [];
       final rawModels = decoded['models'] as List<dynamic>? ?? const [];
-      final usable = <String>[];
-      const blockedSubstrings = [
-        'tts',
-        'image',
-        'live',
-        'transcribe',
-        'embedding',
-        'robotics',
-        'nano-banana',
-        'imagen',
-        'veo',
-        'aqa',
-        'vision',
-      ];
+      final rawNames = <String>[];
       for (final item in rawModels) {
         if (item is! Map<String, dynamic>) continue;
         final methods = (item['supportedGenerationMethods'] as List<dynamic>? ?? const [])
             .map((e) => e.toString())
             .toList();
         if (!methods.contains('generateContent')) continue;
-        var name = (item['name'] ?? '').toString().trim();
-        if (name.startsWith('models/')) {
-          name = name.substring(7);
-        }
-        final low = name.toLowerCase();
-        if (!(low.contains('gemini') || low.contains('gemma'))) continue;
-        if (blockedSubstrings.any(low.contains)) continue;
-        usable.add(name);
+        final name = (item['name'] ?? '').toString().trim();
+        if (name.isNotEmpty) rawNames.add(name);
       }
 
-      usable.sort((a, b) {
-        int rank(String m) {
-          final l = m.toLowerCase();
-          if (l.contains('flash-lite')) return 0;
-          if (l.contains('flash')) return 1;
-          if (l.startsWith('gemini-')) return 2;
-          return 3;
-        }
-
-        return rank(a).compareTo(rank(b));
-      });
-
-      _discoveredModelsByKey[key] = _DiscoveredModelCache(
+      final usable = rankDiscoveredModels(rawNames);
+      _discoveredModelsByKey[kh] = _DiscoveredModelCache(
         models: usable,
         fetchedAt: now,
       );
+      final nfMap = _notFoundUntilByKey[kh];
+      if (nfMap != null) {
+        for (final m in usable) {
+          nfMap.remove(m);
+        }
+      }
+      if (usable.isNotEmpty) {
+        onCacheUpdated?.call(exportCacheJson());
+      }
       return usable;
     } catch (e) {
       _log?.warn('Gemini models.list failed: $e');
       return const [];
     }
+  }
+
+  List<String> _orderWithCooldown(String providerKey, List<String> candidates) {
+    final now = DateTime.now();
+    final map = _providerCooldownUntil[providerKey];
+    map?.removeWhere((_, until) => !until.isAfter(now));
+    final primary = <String>[];
+    final delayed = <String>[];
+    final seen = <String>{};
+    for (final m in candidates) {
+      if (m.isEmpty || !seen.add(m)) continue;
+      final until = map?[m];
+      if (until != null && until.isAfter(now)) {
+        delayed.add(m);
+      } else {
+        primary.add(m);
+      }
+    }
+    return [...primary, ...delayed];
   }
 
   Future<List<GeminiCandidate>?> _tryGroqKey({
@@ -520,11 +818,20 @@ class GeminiClient {
     required void Function(int status, String reason) onStatus,
     void Function(String provider, String model)? onModelUsed,
   }) async {
+    final providerKey = 'groq:${keyFingerprint(key)}';
+    final deadline = DateTime.now().add(_totalRequestBudget);
     final attempted = <String>{};
     var abortedKey = false;
+    var stoppedCascade = false;
+    var stallCount = 0;
 
     Future<({List<GeminiCandidate>? candidates, _AttemptOutcome outcome})>
         attemptGroqModel(String model) async {
+      final remaining = deadline.difference(DateTime.now());
+      if (remaining <= const Duration(seconds: 2)) {
+        return (candidates: null, outcome: _AttemptOutcome.stopCascade);
+      }
+      final reqTimeout = remaining < _attemptTimeout ? remaining : _attemptTimeout;
       attempted.add(model);
       var res = await _safePostOpenAiCompatible(
         hostName: groqHost,
@@ -534,24 +841,45 @@ class GeminiClient {
         temperature: temperature,
         systemPrompt: systemPrompt,
         useJsonFormat: true,
+        timeout: reqTimeout,
         onTimeoutOrNetwork: (reason) => onStatus(0, reason),
       );
       if (res == null) {
-        return (candidates: null, outcome: _AttemptOutcome.tryNextModel);
+        (_providerCooldownUntil[providerKey] ??= {})[model] =
+            DateTime.now().add(_cooldownDuration);
+        stallCount++;
+        return (
+          candidates: null,
+          outcome: stallCount >= _maxStallErrorsPerKey
+              ? _AttemptOutcome.stopCascade
+              : _AttemptOutcome.tryNextModel,
+        );
       }
       if (!res.isOk && res.statusCode == 400) {
-        res = await _safePostOpenAiCompatible(
-          hostName: groqHost,
-          path: '/openai/v1/chat/completions',
-          key: key,
-          model: model,
-          temperature: temperature,
-          systemPrompt: systemPrompt,
-          useJsonFormat: false,
-          onTimeoutOrNetwork: (reason) => onStatus(0, reason),
-        );
-        if (res == null) {
-          return (candidates: null, outcome: _AttemptOutcome.tryNextModel);
+        final retryRem = deadline.difference(DateTime.now());
+        if (retryRem > const Duration(seconds: 2)) {
+          res = await _safePostOpenAiCompatible(
+            hostName: groqHost,
+            path: '/openai/v1/chat/completions',
+            key: key,
+            model: model,
+            temperature: temperature,
+            systemPrompt: systemPrompt,
+            useJsonFormat: false,
+            timeout: retryRem < _attemptTimeout ? retryRem : _attemptTimeout,
+            onTimeoutOrNetwork: (reason) => onStatus(0, reason),
+          );
+          if (res == null) {
+            (_providerCooldownUntil[providerKey] ??= {})[model] =
+                DateTime.now().add(_cooldownDuration);
+            stallCount++;
+            return (
+              candidates: null,
+              outcome: stallCount >= _maxStallErrorsPerKey
+                  ? _AttemptOutcome.stopCascade
+                  : _AttemptOutcome.tryNextModel,
+            );
+          }
         }
       }
       if (!res.isOk) {
@@ -560,6 +888,10 @@ class GeminiClient {
         if (res.statusCode == 401) {
           return (candidates: null, outcome: _AttemptOutcome.abortKey);
         }
+        if (res.statusCode == 429 || res.statusCode >= 500) {
+          (_providerCooldownUntil[providerKey] ??= {})[model] =
+              DateTime.now().add(_cooldownDuration);
+        }
         return (candidates: null, outcome: _AttemptOutcome.tryNextModel);
       }
 
@@ -567,31 +899,42 @@ class GeminiClient {
       if (parsed.isEmpty) {
         onStatus(200, 'empty');
         _log?.warn('Groq $model returned empty or unparseable JSON');
+        (_providerCooldownUntil[providerKey] ??= {})[model] =
+            DateTime.now().add(_cooldownDuration);
         return (candidates: null, outcome: _AttemptOutcome.tryNextModel);
       }
+      _lastWorkingModel = model;
+      _lastWorkingProvider = 'groq';
       onModelUsed?.call('groq', model);
       return (candidates: parsed, outcome: _AttemptOutcome.succeeded);
     }
 
-    for (final m in groqFreeModels) {
+    for (final m in _orderWithCooldown(providerKey, groqFreeModels)) {
       final res = await attemptGroqModel(m);
       if (res.outcome == _AttemptOutcome.succeeded) return res.candidates;
       if (res.outcome == _AttemptOutcome.abortKey) {
         abortedKey = true;
         break;
       }
+      if (res.outcome == _AttemptOutcome.stopCascade) {
+        stoppedCascade = true;
+        break;
+      }
     }
 
-    if (!abortedKey) {
+    if (!abortedKey && !stoppedCascade && DateTime.now().isBefore(deadline)) {
       final discovered = await _discoverGroqModels(key);
       var extraTries = 0;
-      for (final m in discovered) {
-        if (extraTries >= 4) break;
+      for (final m in _orderWithCooldown(providerKey, discovered)) {
+        if (extraTries >= 4 || !DateTime.now().isBefore(deadline)) break;
         if (attempted.contains(m)) continue;
         extraTries++;
         final res = await attemptGroqModel(m);
         if (res.outcome == _AttemptOutcome.succeeded) return res.candidates;
-        if (res.outcome == _AttemptOutcome.abortKey) break;
+        if (res.outcome == _AttemptOutcome.abortKey ||
+            res.outcome == _AttemptOutcome.stopCascade) {
+          break;
+        }
       }
     }
     return null;
@@ -602,13 +945,13 @@ class GeminiClient {
       final res = await _http.get(
         Uri.https(groqHost, '/openai/v1/models'),
         headers: {'Authorization': 'Bearer $key'},
-        timeout: const Duration(seconds: 10),
+        timeout: const Duration(seconds: 6),
       );
       if (!res.isOk) return const [];
       final decoded = jsonDecode(res.body);
       if (decoded is! Map<String, dynamic>) return const [];
       final list = decoded['data'] as List<dynamic>? ?? const [];
-      const blocked = ['whisper', 'guard', 'tts', 'safeguard'];
+      const blocked = ['whisper', 'guard', 'tts', 'safeguard', 'vision'];
       final out = <String>[];
       for (final item in list) {
         if (item is! Map<String, dynamic>) continue;
@@ -617,6 +960,12 @@ class GeminiClient {
         if (id.isEmpty || blocked.any(low.contains)) continue;
         out.add(id);
       }
+      out.sort((a, b) {
+        final sa = _parseParamSizeB(a.toLowerCase());
+        final sb = _parseParamSizeB(b.toLowerCase());
+        if (sa != sb) return sb.compareTo(sa);
+        return a.compareTo(b);
+      });
       return out;
     } catch (_) {
       return const [];
@@ -634,8 +983,14 @@ class GeminiClient {
       'HTTP-Referer': 'https://github.com/gulivermaks/StarFilm',
       'X-Title': 'StarFilm',
     };
+    final providerKey = 'openrouter:${keyFingerprint(key)}';
+    final deadline = DateTime.now().add(_totalRequestBudget);
+    var stallCount = 0;
 
-    for (final model in openRouterFreeModels) {
+    for (final model in _orderWithCooldown(providerKey, openRouterFreeModels)) {
+      final remaining = deadline.difference(DateTime.now());
+      if (remaining <= const Duration(seconds: 2)) break;
+      final reqTimeout = remaining < _attemptTimeout ? remaining : _attemptTimeout;
       final isGemma = model.toLowerCase().contains('gemma');
       var res = await _safePostOpenAiCompatible(
         hostName: openRouterHost,
@@ -646,29 +1001,50 @@ class GeminiClient {
         systemPrompt: systemPrompt,
         useJsonFormat: !isGemma,
         extraHeaders: extraHeaders,
+        timeout: reqTimeout,
         onTimeoutOrNetwork: (reason) => onStatus(0, reason),
       );
-      if (res == null) continue;
+      if (res == null) {
+        (_providerCooldownUntil[providerKey] ??= {})[model] =
+            DateTime.now().add(_cooldownDuration);
+        stallCount++;
+        if (stallCount >= _maxStallErrorsPerKey) break;
+        continue;
+      }
 
       if (!res.isOk && res.statusCode == 400 && !isGemma) {
-        res = await _safePostOpenAiCompatible(
-          hostName: openRouterHost,
-          path: '/api/v1/chat/completions',
-          key: key,
-          model: model,
-          temperature: temperature,
-          systemPrompt: systemPrompt,
-          useJsonFormat: false,
-          extraHeaders: extraHeaders,
-          onTimeoutOrNetwork: (reason) => onStatus(0, reason),
-        );
-        if (res == null) continue;
+        final retryRem = deadline.difference(DateTime.now());
+        if (retryRem > const Duration(seconds: 2)) {
+          res = await _safePostOpenAiCompatible(
+            hostName: openRouterHost,
+            path: '/api/v1/chat/completions',
+            key: key,
+            model: model,
+            temperature: temperature,
+            systemPrompt: systemPrompt,
+            useJsonFormat: false,
+            extraHeaders: extraHeaders,
+            timeout: retryRem < _attemptTimeout ? retryRem : _attemptTimeout,
+            onTimeoutOrNetwork: (reason) => onStatus(0, reason),
+          );
+          if (res == null) {
+            (_providerCooldownUntil[providerKey] ??= {})[model] =
+                DateTime.now().add(_cooldownDuration);
+            stallCount++;
+            if (stallCount >= _maxStallErrorsPerKey) break;
+            continue;
+          }
+        }
       }
 
       if (!res.isOk) {
         onStatus(res.statusCode, 'HTTP ${res.statusCode}');
         _log?.warn('OpenRouter $model HTTP ${res.statusCode}');
         if (res.statusCode == 401) break;
+        if (res.statusCode == 429 || res.statusCode >= 500) {
+          (_providerCooldownUntil[providerKey] ??= {})[model] =
+              DateTime.now().add(_cooldownDuration);
+        }
         continue;
       }
 
@@ -676,8 +1052,12 @@ class GeminiClient {
       if (parsed.isEmpty) {
         onStatus(200, 'empty');
         _log?.warn('OpenRouter $model returned empty or unparseable JSON');
+        (_providerCooldownUntil[providerKey] ??= {})[model] =
+            DateTime.now().add(_cooldownDuration);
         continue;
       }
+      _lastWorkingModel = model;
+      _lastWorkingProvider = 'openrouter';
       onModelUsed?.call('openrouter', model);
       return parsed;
     }
@@ -693,6 +1073,7 @@ class GeminiClient {
     required String systemPrompt,
     required bool useJsonFormat,
     Map<String, String> extraHeaders = const {},
+    Duration timeout = _attemptTimeout,
     required void Function(String reason) onTimeoutOrNetwork,
   }) async {
     final body = <String, dynamic>{
@@ -716,7 +1097,7 @@ class GeminiClient {
           'Authorization': 'Bearer $key',
           ...extraHeaders,
         },
-        timeout: const Duration(seconds: 25),
+        timeout: timeout,
       );
     } on TimeoutException {
       onTimeoutOrNetwork('timeout');
@@ -1012,6 +1393,7 @@ ${jsonEncode(compactPayload)}
     required double temperature,
     required String systemPrompt,
     bool simplified = false,
+    Duration timeout = _attemptTimeout,
   }) {
     final thinkingConfig = simplified ? null : _thinkingConfigForModel(model);
     final generationConfig = <String, dynamic>{
@@ -1033,6 +1415,6 @@ ${jsonEncode(compactPayload)}
       'generationConfig': generationConfig,
     };
     final uri = Uri.https(host, '/v1beta/models/$model:generateContent', {'key': key});
-    return _http.postJson(uri, body, timeout: const Duration(seconds: 25));
+    return _http.postJson(uri, body, timeout: timeout);
   }
 }

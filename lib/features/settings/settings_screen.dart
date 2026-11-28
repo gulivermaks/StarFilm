@@ -449,13 +449,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               isExpanded: true,
               value: state.geminiModel,
               items: [
-                for (final m in GeminiClient.defaultModels)
+                for (final m in {
+                  ...GeminiClient.defaultModels,
+                  ...ref.read(appServicesProvider).gemini.discoveredModels,
+                  state.geminiModel,
+                })
                   DropdownMenuItem(value: m, child: Text(m)),
-                if (!GeminiClient.defaultModels.contains(state.geminiModel))
-                  DropdownMenuItem(
-                    value: state.geminiModel,
-                    child: Text(state.geminiModel),
-                  ),
                 DropdownMenuItem(
                   value: '_custom_',
                   child: Text(s.t('custom_gemini_model')),
@@ -1118,8 +1117,13 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         .map((k) => GeminiClient.detectProvider(k).displayLabel)
         .toSet()
         .join('/');
+    final activeLabel = ref.read(appServicesProvider).gemini.lastWorkingLabel;
+    final activeSuffix =
+        activeLabel.isNotEmpty && activeLabel != 'gemini/${state.geminiModel}'
+            ? ' • Active: $activeLabel'
+            : '';
     final backupLine =
-        'Backup AI: ${backupProviders.isNotEmpty ? backupProviders : no} • Model: ${state.geminiModel}';
+        'Backup AI: ${backupProviders.isNotEmpty ? backupProviders : no} • Model: ${state.geminiModel}$activeSuffix';
     final logText = ref.read(appServicesProvider).log.exportText();
     final body = logText.isEmpty ? s.t('diagnostics_empty') : logText;
     final fullReport = '$statusLine\n$backupLine\n\n$body';
